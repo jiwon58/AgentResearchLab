@@ -10,6 +10,7 @@ const names = {
   ACTIVE: '실행 가능', RUNNING: '실행 중', PAUSED: '일시정지', SUCCESS: '완료', NEEDS_HUMAN: '검토 필요',
   FAILED: '실패', EXHAUSTED: '작업 소진', INCONCLUSIVE: '판단 보류', BUDGET_EXCEEDED: '작업 한도 도달',
   DONE: '완료', QUEUED: '대기', CANCELLED: '취소', CREATED: '준비', IDLE: '대기',
+  READY: '실행 대기', BLOCKED: '선행 작업 대기', PARTIAL: '일부 완료', NOT_STARTED: '시작 전', NOT_RUN: '미실행',
   APPROVED: '승인', REJECTED: '거절', NEEDS_REVISION: '수정 필요', NEEDS_HUMAN_APPROVAL: '사용자 승인 대기',
   PASS: '통과', FAIL: '미충족', NOT_EVALUATED: '미평가', NOT_APPLICABLE: '적용 제외',
   BASELINE: '초기 기준', EMPIRICALLY_PROGRESSIVE: '경험적으로 확인된 진전', TESTABLE_PROGRESS: '검증 가능한 진전',
@@ -23,8 +24,13 @@ const names = {
   AUDIT_SEVERITY: '실험 엄격성 감사', REVIEW_PROGRAMME: '연구 프로그램 평가',
   REVIEW_STAGNATION: '정체 원인과 재계획 검토', 'meta-reviewer': 'Meta-Reviewer', TASK_DELEGATED: '작업 위임', TASK_RESULT: '결과 통지',
   PLAN_PRESET_STUDY: '연구 유형별 계획', RUN_PRESET_TRIAL: '등록 실험 실행', VALIDATE_PRESET_TRIAL: '등록 실험 재검증',
+  COLLECT_ML_DATA: '등록 데이터 수집', PROFILE_ML_DATA: '데이터 품질과 분할 점검',
+  'data-collector': '데이터 수집', 'data-quality': '데이터 품질',
+  classification: '이진 분류', regression: '수치 회귀', grouped: '그룹 단위 무작위', ordered: '파일 순서 유지',
+  BALANCED_ACCURACY: '균형 정확도', MEAN_ABSOLUTE_ERROR: '평균 절대 오차',
   DELEGATE_NATIVE_REVIEW: 'GJC Native 검토',
   'causal-discovery': '제조 공정 연관성', 'ml-optimization': '합성 분류 모델 비교', 'algorithm-research': '정렬 알고리즘 비교',
+  'tabular-ml': '등록 데이터 ML 연구',
   'idea-discovery': '아이디어 및 반증 설계', 'custom-research': '사용자 연구 설계',
   SINGLE_AGENT: '단일 에이전트', PARALLEL_INDEPENDENT: '독립 병렬', HIERARCHICAL: '계층 위임', SCIENTIFIC_DEBATE: '과학 토론', DEPENDENCY_DAG: '작업 의존성',
   director: 'Director', evidence: '근거 조사', hypothesis: '가설 연구', skeptic: '비판 검토', methodology: '방법론', experiment: '실험', evolution: '진화',
@@ -34,7 +40,7 @@ const names = {
   'task.cancelled': '작업 취소', 'task.lease_expired': '중단된 작업 복구', 'agent.delegated': '에이전트 위임',
   'proposal.decided': '제안에 대한 정책 결정', 'proposal.human_review': '사용자 승인 검토', 'topology.selected': '실행 구조 결정', 'stagnation.detected': '진행 정체 감지',
 };
-const tabs = { overview: '진행 개요', experiments: '실험 흐름', lineage: '연구 진화', evolution: '에이전트 진화',
+const tabs = { overview: '진행 개요', flow: '연구 흐름', experiments: '실험 흐름', lineage: '연구 진화', evolution: '에이전트 진화',
   council: '가설과 논증', agents: '에이전트', orchestration: '작업 및 승인' };
 const time = new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
 const dateTime = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' });
@@ -45,7 +51,7 @@ let pickerAvailable = false;
 const label = value => names[value] ?? value ?? '—';
 function badge(status) {
   const tone = ['DONE', 'SUCCESS', 'PASS', 'APPROVED'].includes(status) ? 'good'
-    : ['PAUSED', 'NEEDS_HUMAN', 'NEEDS_HUMAN_APPROVAL', 'NEEDS_REVISION'].includes(status) ? 'attention'
+    : ['PAUSED', 'BLOCKED', 'NEEDS_HUMAN', 'NEEDS_HUMAN_APPROVAL', 'NEEDS_REVISION'].includes(status) ? 'attention'
       : ['FAILED', 'REJECTED', 'FAIL'].includes(status) ? 'failed' : status === 'RUNNING' ? 'running' : '';
   return el('span', label(status), `badge ${tone}`);
 }
@@ -177,6 +183,7 @@ async function activate(workspace) {
   const listing = await scoped(state, '/research');
   state.defaults = listing.defaults;
   state.datasets = listing.datasets ?? [];
+  state.mlDatasets = listing.mlDatasets ?? [];
   context = state;
   remember(workspace);
   notice.textContent = '';
@@ -184,6 +191,7 @@ async function activate(workspace) {
   $('#workspace-path').textContent = workspace.root ?? 'LAB_DB에 지정된 기록';
   $('#runtime').textContent = label(workspace.runtime);
   $('#new-run').disabled = false;
+  $('#register-ml-data').disabled = false;
   $('#comparisons').disabled = false;
   showEmpty(true);
   updateRuns(state, listing.runs);
@@ -212,11 +220,23 @@ function openNewRun() {
   for (const field of ['researchType', 'strategy', 'memory', 'seed', 'maxTasks', 'maxParallel', 'evolution']) form.elements[field].value = defaults[field];
   const datasets = form.elements.dataset;
   datasets.replaceChildren(new Option('합성 제조 데이터', ''), ...context.datasets.map(row => new Option(`${row.row_count}개 관측 · ${row.id.slice(0, 12)}`, row.id)));
-  datasets.disabled = defaults.researchType !== 'causal-discovery';
+  const mlDatasets = form.elements.mlDataset;
+  mlDatasets.replaceChildren(new Option(context.mlDatasets.length ? '데이터셋 선택' : '작업 폴더에서 ML 데이터를 먼저 등록하세요', ''),
+    ...context.mlDatasets.map(row => new Option(`${row.target} · ${label(row.kind)} · ${row.row_count}행 · ${row.id.slice(0, 8)}`, row.id)));
+  updateDatasetFields();
   form.elements.timeout.value = defaults.timeoutMs / 1000;
   $('#research-location').textContent = context.workspace.root ?? context.workspace.name;
   $('#create-error').textContent = '';
   createDialog.showModal();
+}
+
+function updateDatasetFields() {
+  const { researchType, dataset, mlDataset } = $('#create-form').elements;
+  const manufacturing = researchType.value === 'causal-discovery';
+  const ml = researchType.value === 'tabular-ml';
+  $('#manufacturing-data-field').hidden = dataset.disabled = !manufacturing;
+  $('#ml-dataset-field').hidden = mlDataset.disabled = !ml;
+  mlDataset.required = ml;
 }
 
 function progressPanel(view) {
@@ -252,11 +272,31 @@ function timeline(view) {
   return list;
 }
 
-function overview(view) {
+function overview(state, view) {
   const { researchLedger: research, progressLedger: progress } = view;
   const top = el('div', undefined, 'overview-grid');
-  top.append(progressPanel(view), panel('연구 설정', settings(view.run.plan)));
+  const progressSection = progressPanel(view);
+  const flowLink = el('div', undefined, 'flow-overview-link');
+  flowLink.append(button('연구 흐름 보기', () => selectResearchTab(state, view, 'flow')));
+  progressSection.append(flowLink);
+  top.append(progressSection, panel('연구 설정', settings(view.run.plan)));
   const lower = el('div', undefined, 'detail-grid');
+  if (view.run.plan.mlDataset) {
+    const profile = research.dataProfile;
+    const rows = [['데이터 버전', view.run.plan.mlDataset.id]];
+    if (research.dataCollection) rows.push(['등록 행', research.dataCollection.rows]);
+    else rows.push(['데이터 수집', '실행 대기']);
+    if (profile) rows.push(['과제', label(profile.task)], ['분할', label(profile.split)], ['학습 / 개발 / 보류',
+      `${profile.trainingRows} / ${profile.developmentRows} / ${profile.heldOutRows}`], ['수치 특성', profile.features], ['학습 구간 상수 특성', profile.constants.length]);
+    const { experiment, validation } = progress;
+    const experimentPanel = experiment ? panel('ML 모델 비교', el('p', `개발 세트에서 선택 · ${experiment.selected} · ${label(experiment.metric)}`),
+      table(['모델', '개발 점수', '보류 점수'], experiment.results.map(row => [row.candidate, row.developmentScore.toFixed(4), row.heldOutScore?.toFixed(4)])),
+      el('p', '보류 점수는 선택된 모델과 기준선에만 표시합니다.', 'muted'),
+      ...(validation ? [el('p', `재계산 ${label(validation.independentReproducibility)}`)] : []))
+      : panel('ML 모델 비교', el('p', '실험이 완료되면 비교 결과가 표시됩니다.'));
+    lower.append(panel('데이터 수집과 품질', table(['기록', '값'], rows)), experimentPanel);
+    return [top, lower];
+  }
   if (research.presetStudy) {
     const experiment = progress.experiment;
     const formatScore = score => Number.isInteger(score) ? score : score?.toFixed(3);
@@ -274,6 +314,93 @@ function overview(view) {
   ...(progress.experiment?.artifact ? [details('실험 산출물 해시', progress.experiment.artifact)] : []),
   ...(research.plan ? [details('근거 및 사전 등록', { evidence: research.evidence, plan: research.plan })] : [])), panel('최근 활동', timeline(view)));
   return [top, lower];
+}
+
+function researchFlowPage(state, view) {
+  const flow = view.researchFlow;
+  const byId = new Map(view.tasks.map(task => [task.id, task]));
+  const byProposal = new Map(view.proposals.map(item => [item.id, item]));
+  const lastFailure = new Map(view.events.filter(event => event.kind === 'task.settled' && event.payload.reason)
+    .map(event => [event.payload.id, event.payload.reason]));
+  const byStage = new Map(flow.stages.map(stage => [stage.id, stage]));
+  const current = byStage.get(flow.current);
+  const stages = el('ol', undefined, 'research-stage-track');
+  stages.setAttribute('aria-label', '연구 단계');
+  const controls = new Map();
+  const inspector = el('div', undefined, 'research-stage-inspector');
+  inspector.setAttribute('aria-live', 'polite');
+
+  for (const stage of flow.stages) {
+    const entry = el('li', undefined, `research-stage stage-${stage.status.toLowerCase()}`);
+    const control = button('', () => {
+      state.diagramSelection.flow = stage.id;
+      inspect(stage);
+    }, 'research-stage-button');
+    const caption = stage.taskIds.length ? `등록 작업 ${stage.done}/${stage.taskIds.length} 완료` : '등록된 작업 없음';
+    control.append(el('strong', stage.title), badge(stage.status), el('span', caption, 'caption'));
+    if (stage.id === current?.id) control.setAttribute('aria-current', 'step');
+    controls.set(stage.id, control);
+    entry.append(control);
+    stages.append(entry);
+  }
+
+  function inspect(stage) {
+    for (const [id, control] of controls) control.setAttribute('aria-pressed', String(id === stage.id));
+    const tasks = stage.taskIds.map(id => byId.get(id));
+    const waiting = new Map(stage.waiting.map(item => [item.task, item.blockers]));
+    const heading = el('div', undefined, 'progress-top');
+    heading.append(el('h3', stage.title), badge(stage.status));
+    const rows = tasks.map(task => {
+      const blockers = (waiting.get(task.id) ?? []).map(id => label(byId.get(id)?.action ?? id));
+      return [label(task.action), label(task.role), badge(task.status),
+        blockers.length ? blockers.join(', ') : task.status === 'FAILED' ? lastFailure.get(task.id) : null];
+    });
+    const actions = el('div', undefined, 'actions');
+    if (stage.id === 'hypotheses') actions.append(button('가설과 논증 열기', () => selectResearchTab(state, view, 'council')));
+    if (['design', 'experiment', 'validation'].includes(stage.id) && tasks.length) actions.append(button('실험 흐름 열기', () => {
+      state.diagramSelection.experiment = (tasks.find(task => task.status === 'RUNNING') ?? tasks.at(-1)).id;
+      selectResearchTab(state, view, 'experiments');
+    }));
+    if (stage.approvalIds.length) actions.append(button('대기 중인 승인 보기', () => selectResearchTab(state, view, 'orchestration'), 'primary'));
+    const approvals = stage.approvalIds.map(id => byProposal.get(id)).filter(Boolean);
+    inspector.replaceChildren(heading,
+      table(['작업', '담당 Agent', '상태', '선행 대기 또는 실패 원인'], rows, '이 단계에 등록된 작업이 없습니다.'),
+      ...(approvals.length ? [table(['승인 대기 작업', '제안자'], approvals.map(item => [label(item.payload.action_type), label(item.payload.proposer_agent_id)]))] : []),
+      ...(actions.childElementCount ? [actions] : []));
+  }
+  const initial = byStage.get(state.diagramSelection.flow) ?? current;
+  if (initial) inspect(initial);
+
+  const stagePanel = panel('연구 흐름', stages, inspector);
+  const context = el('div', undefined, 'research-flow-context');
+  const approvalCount = flow.supportApprovalIds.length + flow.stages.reduce((sum, stage) => sum + stage.approvalIds.length, 0);
+  const running = view.tasks.filter(task => task.status === 'RUNNING');
+  if (view.run.status === 'PAUSED') context.append(el('p', '연구가 일시정지되었습니다.'));
+  else if (running.length) context.append(el('p', `실행 중 · ${running.map(task => label(task.action)).join(', ')}`));
+  else if (current) {
+    const closed = !['ACTIVE', 'PAUSED', 'NEEDS_HUMAN'].includes(view.run.status);
+    context.append(el('p', `${closed ? '마지막 기록 단계' : '진행 지점'} · ${current.title}`));
+  }
+  if (approvalCount) context.append(button(`승인 대기 ${approvalCount}건`, () => selectResearchTab(state, view, 'orchestration'), 'subtle'));
+  stagePanel.insertBefore(context, stages);
+
+  const support = flow.supportTaskIds.map(id => byId.get(id));
+  const pending = flow.supportApprovalIds.map(id => byProposal.get(id)).filter(Boolean);
+  const approvalOrSupport = support.length || pending.length ? [panel('연구 지원 작업',
+    table(['작업', '담당', '상태'], [...support.map(task => [task.proposal.native_review ?? label(task.action), label(task.role), badge(task.status)]),
+      ...pending.map(item => [item.payload.native_review ?? label(item.payload.action_type), label(item.payload.proposer_agent_id), badge(item.decision)])]),
+    button('작업 및 승인 열기', () => selectResearchTab(state, view, 'orchestration')))] : [];
+  const { validation, experiment } = view.progressLedger;
+  const resultRows = [];
+  if (experiment?.selected !== undefined) resultRows.push(['선택 후보', experiment.selected ?? '없음']);
+  if (experiment?.kind === 'REGISTERED_TABULAR_ML') {
+    const selected = experiment.results.find(row => row.candidate === experiment.selected);
+    resultRows.push(['보류 세트 · ' + label(experiment.metric), selected?.heldOutScore?.toFixed(4)]);
+  }
+  if (experiment?.observed) resultRows.push(['사전 기준 충족', `${experiment.observed.filter(item => item.outcome === 'PASS').length}/${experiment.observed.length}개 가설`]);
+  if (validation?.independentReproducibility) resultRows.push(['독립 재계산', badge(validation.independentReproducibility)]);
+  if (view.researchLedger.programme) resultRows.push(['연구 프로그램 판정', label(view.researchLedger.programme.classification)]);
+  return [stagePanel, ...(resultRows.length ? [panel('실험과 검증 요약', table(['기록', '결과'], resultRows))] : []), ...approvalOrSupport];
 }
 
 function council(view) {
@@ -326,7 +453,7 @@ function experimentFlow(state, view) {
       return info;
     }) : el('p', '연구를 실행하면 작업 의존성이 여기에 표시됩니다.', 'muted');
   const phases = [
-    ['계획과 근거', ['REPLAN', 'INVESTIGATE', 'CHECK_DATA_QUALITY', 'PLAN_PRESET_STUDY']],
+    ['계획과 근거', ['COLLECT_ML_DATA', 'PROFILE_ML_DATA', 'REPLAN', 'INVESTIGATE', 'CHECK_DATA_QUALITY', 'PLAN_PRESET_STUDY']],
     ['가설과 검토', ['GENERATE_HYPOTHESES', 'CRITIQUE', 'CONSTRUCT_ARGUMENTS', 'OPEN_DEBATE', 'MODERATE_DEBATE', 'REVIEW_ARGUMENTS']],
     ['실험 설계와 실행', ['DESIGN_EXPERIMENT', 'AUDIT_SEVERITY', 'RUN_EXPERIMENT', 'RUN_PRESET_TRIAL']],
     ['검증과 수정', ['VALIDATE_RESULT', 'VALIDATE_PRESET_TRIAL', 'REFINE_HYPOTHESES', 'REVIEW_PROGRAMME', 'COMPLETE']],
@@ -348,7 +475,8 @@ function experimentFlow(state, view) {
   }
   const provenance = [];
   if (researchLedger.plan?.digest) provenance.push(['실험 사전등록', researchLedger.plan.digest]);
-  if (researchLedger.plan?.datasetVersion || view.run.plan.dataset) provenance.push(['데이터 버전', researchLedger.plan?.datasetVersion ?? view.run.plan.dataset]);
+  const dataset = researchLedger.plan?.datasetVersion ?? view.run.plan.dataset ?? view.run.plan.mlDataset?.id;
+  if (dataset) provenance.push(['데이터 버전', dataset]);
   if (progressLedger.experiment?.artifact?.sha256) provenance.push(['실험 산출물 SHA-256', progressLedger.experiment.artifact.sha256]);
   if (progressLedger.validation) provenance.push(['독립 재현', badge(progressLedger.validation.independentReproducibility)]);
   return [panel('실험 작업 흐름', volume, ...(stages.childElementCount ? [stages] : []),
@@ -481,6 +609,12 @@ function workflow(state, view) {
       label(proposal.payload.proposer_agent_id), badge(proposal.decision), proposal.reason])), details('전체 이벤트', view.events))];
 }
 
+function selectResearchTab(state, view, tab) {
+  state.tab = tab;
+  state.signature = '';
+  paint(state, view, renderResearch);
+}
+
 function renderResearch(state, view) {
   const actions = el('div', undefined, 'actions');
   const id = view.run.id;
@@ -511,11 +645,11 @@ function renderResearch(state, view) {
   const nav = el('nav', undefined, 'tabs');
   nav.setAttribute('aria-label', '연구 상세');
   for (const [tab, name] of Object.entries(tabs)) {
-    const link = button(name, () => { state.tab = tab; state.signature = ''; paint(state, view, renderResearch); });
+    const link = button(name, () => selectResearchTab(state, view, tab));
     link.setAttribute('aria-pressed', String(state.tab === tab));
     nav.append(link);
   }
-  const sections = state.tab === 'overview' ? overview(view) : state.tab === 'council' ? council(view)
+  const sections = state.tab === 'overview' ? overview(state, view) : state.tab === 'flow' ? researchFlowPage(state, view) : state.tab === 'council' ? council(view)
     : state.tab === 'experiments' ? experimentFlow(state, view) : state.tab === 'lineage' ? researchEvolution(state, view)
     : state.tab === 'evolution' ? agentEvolution(state, view)
     : state.tab === 'orchestration' ? workflow(state, view)
@@ -730,6 +864,7 @@ async function refresh(state, force = false) {
     state.nextPoll = Date.now() + (view?.execution?.running || view?.workspace?.benchmarkRunning ? 1100 : 3800);
     updateRuns(state, listing.runs);
     state.datasets = listing.datasets ?? [];
+    state.mlDatasets = listing.mlDatasets ?? [];
     if (view) paint(state, view, page === 'comparisons' ? renderComparisons : renderResearch);
   } finally { if (state.pending === request) state.pending = false; }
 }
@@ -765,10 +900,36 @@ $('#connect-form').addEventListener('submit', event => {
   void connect(() => api('/api/workspaces/connect', { path: $('#folder').value }));
 });
 $('#new-run').addEventListener('click', openNewRun);
-$('#create-form').elements.researchType.addEventListener('change', event => {
-  const dataset = $('#create-form').elements.dataset;
-  dataset.disabled = event.target.value !== 'causal-discovery';
-  if (dataset.disabled) dataset.value = '';
+$('#create-form').elements.researchType.addEventListener('change', updateDatasetFields);
+$('#register-ml-data').addEventListener('click', () => {
+  if (!context) return;
+  $('#ml-data-error').textContent = '';
+  $('#ml-data-dialog').showModal();
+});
+$('#ml-data-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const state = context;
+  if (!state) return;
+  const form = event.currentTarget;
+  const submit = form.querySelector('button[type="submit"]');
+  const errorField = $('#ml-data-error');
+  errorField.textContent = '';
+  submit.disabled = true;
+  try {
+    const fields = new FormData(form);
+    const file = fields.get('file');
+    const format = file.name.split('.').at(-1).toLowerCase();
+    if (!['csv', 'json'].includes(format) || file.size > 1000000) throw new Error('1MB 이하의 CSV 또는 JSON 파일을 선택하세요.');
+    const entry = await scoped(state, '/ml-datasets', { format, content: await file.text(), kind: fields.get('kind'),
+      target: fields.get('target'), features: fields.get('features').split(',').map(name => name.trim()), group: fields.get('group'),
+      split: fields.get('split'), delimiter: fields.get('delimiter') });
+    if (context !== state) return;
+    form.reset();
+    $('#ml-data-dialog').close();
+    await refresh(state, true);
+    notice.textContent = `데이터 ${entry.target} · ${entry.rows}행 등록 완료`;
+  } catch (error) { errorField.textContent = error.message; }
+  finally { submit.disabled = false; }
 });
 $('#comparisons').addEventListener('click', () => {
   if (context) void openComparison(context).catch(report);
@@ -785,7 +946,7 @@ $('#create-form').addEventListener('submit', event => {
   const settings = Object.fromEntries(['researchType', 'strategy', 'memory', 'evolution'].map(name => [name, fields.get(name)]));
   for (const name of ['seed', 'maxTasks', 'maxParallel']) settings[name] = Number(fields.get(name));
   settings.timeoutMs = Math.round(Number(fields.get('timeout')) * 1000);
-  void scoped(state, '/research', { objective: fields.get('objective'), settings, dataset: fields.get('dataset') }).then(run => {
+  void scoped(state, '/research', { objective: fields.get('objective'), settings, dataset: fields.get('dataset'), mlDataset: fields.get('mlDataset') }).then(run => {
     if (context !== state) return;
     createDialog.close();
     form.reset();

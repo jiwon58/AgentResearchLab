@@ -12,6 +12,8 @@ import { addAbduction, parseArguments, parseClosing, parseObjections, parseOpeni
   type Closing, type CouncilArgument, type Finding, type Gate, type Objection, type Opening } from '../scientific-reasoning/schema.ts';
 import { readPresetStudy, runPresetStudy, type PresetStudy } from './preset-studies.ts';
 import { nativeReviewEvidence, nativeReviewOption } from './native-reviews.ts';
+import { buildResearchFlow } from './research-flow.ts';
+import { profileMl, runDataMl } from './data-ml.ts';
 
 const resultOf = <T>(tasks: Task[], action: Action) => {
   const match = tasks.filter(task => task.action === action && task.status === 'DONE').at(-1);
@@ -127,6 +129,12 @@ export class ResearchOrchestrator {
       } else if (current.length >= run.plan.maxTasks) {
         this.store.changeStatus(project, 'BUDGET_EXCEEDED', 'TASK_LIMIT');
         return;
+      } else if (run.plan.researchType === 'tabular-ml' && !current.length) {
+        const collect = proposal(run, 'COLLECT_ML_DATA', 'director');
+        const admitted = this.store.submit(project, 'director', collect);
+        if (admitted.decision === 'APPROVED' && run.plan.maxTasks > 1) {
+          this.store.submit(project, 'director', proposal(run, 'PROFILE_ML_DATA', 'director', [collect.proposal_id]));
+        }
       } else if (run.plan.strategy === 'deterministic') {
         for (const p of nextManufacturingProposals(run, current)) this.store.submit(project, 'director', p);
       } else {
@@ -184,6 +192,14 @@ export class ResearchOrchestrator {
     const { run, claim: { task }, tasks } = context;
     const history = ancestors(tasks, task);
     const measurements = () => run.plan.dataset ? this.store.dataset(run.plan.dataset) : undefined;
+    const mlSnapshot = () => {
+      if (!run.plan.mlDataset) throw new Error('A pinned ML dataset is required');
+      const snapshot = this.store.mlDataset(run.plan.mlDataset.id);
+      if (snapshot.kind !== run.plan.mlDataset.kind) throw new Error('ML task no longer matches its dataset');
+      return snapshot;
+    };
+    const runTrial = (plan: PresetStudy) => run.plan.researchType === 'tabular-ml' ? runDataMl(mlSnapshot(), plan.candidates)
+      : runPresetStudy(run.plan.researchType, plan, run.plan.seed);
     switch (task.action) {
       case 'REPLAN': {
         const response = await this.runtime.think(context, signal);
@@ -199,10 +215,20 @@ export class ResearchOrchestrator {
           followups: Array.isArray(response.proposals) ? response.proposals : [],
           findings: [{ code: 'RESEARCH_STAGNATION', subject: 'run', refs: tasks.filter(t => t.status === 'FAILED').map(t => t.id) }] };
       }
+      case 'COLLECT_ML_DATA': {
+        const snapshot = mlSnapshot();
+        return { result: { datasetVersion: snapshot.id, sourceVersion: snapshot.sourceVersion, rows: snapshot.rows.length,
+          access: 'OPERATOR_REGISTERED_READ_ONLY' } };
+      }
+      case 'PROFILE_ML_DATA': {
+        const profile = profileMl(mlSnapshot());
+        if (profile.exactTargetMatches.length) throw new Error('A training feature duplicates the target');
+        return { result: profile };
+      }
       case 'PLAN_PRESET_STUDY': {
         const response = await this.runtime.think(context, signal);
         if (!isRecord(response)) throw new Error('Missing preset study plan');
-        return { result: readPresetStudy(response.plan, run.plan.researchType) };
+        return { result: readPresetStudy(response.plan, run.plan.researchType, run.plan.mlDataset?.kind) };
       }
       case 'DELEGATE_NATIVE_REVIEW': {
         const name = task.proposal.native_review;
@@ -214,15 +240,16 @@ export class ResearchOrchestrator {
         return { result: { name, ...review, disposition: 'ADVISORY' } };
       }
       case 'RUN_PRESET_TRIAL': {
-        const result = runPresetStudy(run.plan.researchType, resultOf<PresetStudy>(history, 'PLAN_PRESET_STUDY'), run.plan.seed);
+        const result = runTrial(resultOf<PresetStudy>(history, 'PLAN_PRESET_STUDY'));
         return { result: { ...result, ...(this.artifacts ? { artifact: this.artifacts.put(result) } : {}) } };
       }
       case 'VALIDATE_PRESET_TRIAL': {
-        const { artifact, ...observed } = resultOf<ReturnType<typeof runPresetStudy> & { artifact?: { sha256: string } }>(history, 'RUN_PRESET_TRIAL');
-        const replay = runPresetStudy(run.plan.researchType, resultOf<PresetStudy>(history, 'PLAN_PRESET_STUDY'), run.plan.seed);
+        const { artifact, ...observed } = resultOf<ReturnType<typeof runTrial> & { artifact?: { sha256: string } }>(history, 'RUN_PRESET_TRIAL');
+        const replay = runTrial(resultOf<PresetStudy>(history, 'PLAN_PRESET_STUDY'));
         const persisted = !artifact || !this.artifacts || hash(this.artifacts.read(artifact.sha256)) === hash(observed);
         const reproduced = persisted && replay.selected !== null && hash(replay) === hash(observed);
-        return { result: { independentReproducibility: reproduced ? 'PASS' : 'FAIL', comparison: 'SYNTHETIC_REGISTERED_FIXTURES',
+        return { result: { independentReproducibility: reproduced ? 'PASS' : 'FAIL',
+          comparison: run.plan.researchType === 'tabular-ml' ? 'REGISTERED_TABULAR_DATA' : 'SYNTHETIC_REGISTERED_FIXTURES',
           selected: replay.selected, validator: 'preset-deterministic-replay/v1' } };
       }
       case 'INVESTIGATE': return { result: evidence(run.plan.seed, measurements()) };
@@ -356,14 +383,17 @@ export class ResearchOrchestrator {
     const run = this.store.run(project);
     const tasks = this.store.tasks(project);
     const events = this.store.events(project);
+    const proposals = this.store.proposals(project);
     const completed = tasks.filter(t => t.status === 'DONE');
     const result = (action: Action) => completed.findLast(t => t.action === action)?.result ?? null;
     return {
-      run, tasks, events, proposals: this.store.proposals(project), branch: this.store.branchContext(project) ?? null,
+      run, tasks, events, proposals, branch: this.store.branchContext(project) ?? null,
+      researchFlow: buildResearchFlow(run.plan, run.status, tasks, proposals),
       researchRelations: this.store.researchRelations(project), genomeLineage: this.store.genomeLineage(run.plan),
       nativeReviewOptions: (run.plan.native ?? []).map(name => nativeReviewOption(name, tasks)),
       residents: this.store.residentView(project), messages: this.store.messages(project),
-      researchLedger: { evidence: result('INVESTIGATE'), presetStudy: result('PLAN_PRESET_STUDY'), hypotheses: result('REFINE_HYPOTHESES') ?? result('GENERATE_HYPOTHESES'),
+      researchLedger: { evidence: result('INVESTIGATE'), dataCollection: result('COLLECT_ML_DATA'), dataProfile: result('PROFILE_ML_DATA'),
+        presetStudy: result('PLAN_PRESET_STUDY'), hypotheses: result('REFINE_HYPOTHESES') ?? result('GENERATE_HYPOTHESES'),
         arguments: result('REVIEW_ARGUMENTS'), argumentGraph: this.store.argumentGraph(project), plan: result('DESIGN_EXPERIMENT'),
         severity: result('AUDIT_SEVERITY'), programme: result('REVIEW_PROGRAMME') },
       scientificSim: this.store.scientificSim(project),

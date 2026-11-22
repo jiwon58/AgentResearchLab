@@ -6,6 +6,7 @@ import { actionRoles, availableActions, hash, parseProposal, philosophies, proje
 import type { Finding, Graph, GraphEdge, GraphNode } from '../scientific-reasoning/schema.ts';
 import { readRevisionProof, type RevisionKind, type RevisionConfiguration } from './revisions.ts';
 import { parseMeasurements, type DataSnapshot, type Hypothesis } from './science.ts';
+import { MlDataError, parseMlFile, type MlDataset, type MlKind, type MlSnapshot } from './data-ml.ts';
 
 type Parameter = string | number | null;
 interface Statement {
@@ -58,8 +59,8 @@ export class ResearchStore {
     db.exec('PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;');
     this.transaction(() => {
       const version = this.get<{ user_version: number }>('PRAGMA user_version')?.user_version;
-      if (version === undefined || version < 0 || version > 5) throw new Error('Unsupported database schema');
-      for (const migration of [1, 2, 3, 4, 5].slice(version)) {
+      if (version === undefined || version < 0 || version > 6) throw new Error('Unsupported database schema');
+      for (const migration of [1, 2, 3, 4, 5, 6].slice(version)) {
         const filename = String(migration).padStart(3, '0');
         db.exec(readFileSync(new URL(`./migrations/${filename}.sql`, import.meta.url), 'utf8'));
         db.exec(`PRAGMA user_version=${migration}`);
@@ -113,6 +114,7 @@ export class ResearchStore {
 
   private createRun(objective: string, plan: Plan): Run {
     if (typeof objective !== 'string' || objective.trim().length < 3 || objective.length > 2000) throw new Error('Invalid objective');
+    if (plan.researchType === 'tabular-ml' && !plan.mlDataset) throw new MlDataError('등록된 ML 데이터셋을 선택하세요.');
     const id = randomUUID();
     this.write('INSERT INTO research VALUES(?,?,?,?,?)', id, objective.trim(), 'ACTIVE', JSON.stringify(plan), Date.now());
     for (const role of projectRoles(plan)) {
@@ -510,6 +512,37 @@ export class ResearchStore {
   datasets() {
     return this.all<{ id: string; source_version: string; row_count: number }>(
       'SELECT id,source_version,row_count FROM approved_datasets ORDER BY created_at DESC,id');
+  }
+
+  registerMlDataset(input: unknown) {
+    const { dataset, id, sourceVersion } = parseMlFile(input);
+    this.write('INSERT OR IGNORE INTO approved_ml_datasets VALUES(?,?,?,?,?,?,?,?)', id, sourceVersion, dataset.kind, dataset.rows.length,
+      dataset.target, JSON.stringify(dataset.features), JSON.stringify(dataset), Date.now());
+    return { id, kind: dataset.kind, target: dataset.target, rows: dataset.rows.length, access: 'READ_ONLY' };
+  }
+
+  mlDatasets() {
+    return this.all<{ id: string; source_version: string; kind: MlKind; target: string; row_count: number; features: string }>(
+      'SELECT id,source_version,kind,target,row_count,features FROM approved_ml_datasets ORDER BY created_at DESC,id')
+      .map(dataset => ({ ...dataset, features: JSON.parse(dataset.features) as string[] }));
+  }
+
+  mlDataset(id: string): MlSnapshot {
+    const row = this.get<{ source_version: string; records: string }>('SELECT source_version,records FROM approved_ml_datasets WHERE id=?', id);
+    if (!row) throw new MlDataError('이 작업 폴더에서 등록된 ML 데이터를 찾을 수 없습니다.');
+    const dataset = JSON.parse(row.records) as MlDataset;
+    if (hash(dataset) !== id) throw new Error('Approved ML snapshot integrity failure');
+    return { ...dataset, id, sourceVersion: row.source_version };
+  }
+
+  withMlDataset(plan: Plan, id: unknown) {
+    if (plan.researchType !== 'tabular-ml') {
+      if (id != null && id !== '') throw new MlDataError('등록 ML 데이터는 표형 데이터 ML 연구에서 선택하세요.');
+      return plan;
+    }
+    if (typeof id !== 'string' || !id) throw new MlDataError('등록된 ML 데이터셋을 선택하세요.');
+    const dataset = this.mlDataset(id);
+    return snapshotRevisions(plan, { mlDataset: { id, kind: dataset.kind } });
   }
 
   dataset(id: string): DataSnapshot {

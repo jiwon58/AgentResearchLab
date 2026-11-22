@@ -20,6 +20,7 @@
         <strong id="workspace-name">연결된 폴더 없음</strong>
         <span id="workspace-path" class="workspace-path"></span>
         <button id="change-workspace" class="subtle" type="button">폴더 선택</button>
+        <button id="register-ml-data" type="button" disabled>ML 데이터 등록</button>
       </section>
       <div class="sidebar-heading"><h2>연구 실행</h2><button id="new-run" type="button" disabled>새 연구</button></div>
       <div id="runs" class="run-list" aria-label="연구 실행 목록"></div>
@@ -50,9 +51,10 @@
       <label for="objective">연구 목표</label>
       <textarea id="objective" name="objective" rows="3" minlength="3" maxlength="2000" required placeholder="제조 공정 센서와 품질 불량률 사이의 관계를 검증합니다."></textarea>
       <div class="form-grid">
-        <label>연구 유형<select name="researchType"><option value="causal-discovery">제조 공정 연관성</option><option value="ml-optimization">합성 분류 모델 비교</option><option value="algorithm-research">정렬 알고리즘 비교</option><option value="idea-discovery">아이디어 및 반증 설계</option><option value="custom-research">사용자 연구 설계</option></select></label>
+        <label>연구 유형<select name="researchType"><option value="causal-discovery">제조 공정 연관성</option><option value="tabular-ml">등록 데이터 ML 연구</option><option value="ml-optimization">합성 분류 모델 비교</option><option value="algorithm-research">정렬 알고리즘 비교</option><option value="idea-discovery">아이디어 및 반증 설계</option><option value="custom-research">사용자 연구 설계</option></select></label>
         <label>오케스트레이션<select name="strategy"><option value="hybrid-adaptive">적응형 Director</option><option value="deterministic">고정 정책</option><option value="cognitive-director">직렬 Director</option><option value="evolutionary-hybrid">진화형 정책</option></select></label>
-        <label>데이터<select name="dataset"><option value="">합성 제조 데이터</option></select></label>
+        <label id="manufacturing-data-field">데이터<select name="dataset"><option value="">합성 제조 데이터</option></select></label>
+        <label id="ml-dataset-field" hidden>등록 ML 데이터<select name="mlDataset" disabled></select></label>
         <label>가설 Agent Genome<select name="evolution"><option value="static-baseline">기본 Seed</option><option value="quality-diversity">승인된 Genome 사용</option></select></label>
         <label>메모리<select name="memory"><option value="both">개인 + 공유</option><option value="private">개인만</option><option value="shared">공유만</option><option value="none">사용 안 함</option></select></label>
         <label>실험 시드<input name="seed" type="number" min="0" max="4294967295" step="1" required></label>
@@ -62,6 +64,23 @@
       </div>
       <p id="create-error" class="field-error" role="status"></p>
       <div class="dialog-actions"><button type="button" data-close="research-dialog">취소</button><button type="submit" class="primary">연구 만들기</button></div>
+    </form>
+  </dialog>
+  <dialog id="ml-data-dialog" aria-labelledby="ml-data-dialog-title">
+    <div class="dialog-heading"><h2 id="ml-data-dialog-title">ML 데이터 등록</h2><button type="button" data-close="ml-data-dialog" class="close" aria-label="닫기">×</button></div>
+    <p>UTF-8 CSV 또는 JSON 레코드 배열을 선택하세요. 1MB 이하 파일의 지정한 열을 이 작업 폴더에 저장합니다.</p>
+    <form id="ml-data-form">
+      <label>CSV 또는 JSON 파일<input name="file" type="file" accept=".csv,.json,text/csv,application/json" required></label>
+      <div class="form-grid">
+        <label>ML 과제<select name="kind"><option value="classification">이진 분류</option><option value="regression">수치 회귀</option></select></label>
+        <label>데이터 분할<select name="split"><option value="grouped">그룹 단위 무작위</option><option value="ordered">파일 순서 유지</option></select></label>
+        <label>CSV 구분 기호<select name="delimiter"><option value=",">쉼표</option><option value=";">세미콜론</option></select></label>
+        <label>예측 대상 열<input name="target" required maxlength="120" placeholder="예: outcome"></label>
+        <label>그룹 열 (선택)<input name="group" maxlength="120" placeholder="예: participant_id"></label>
+      </div>
+      <label class="ml-features">수치 특성 열 (쉼표로 구분)<input name="features" maxlength="3000" required placeholder="예: age, duration, score"></label>
+      <p id="ml-data-error" class="field-error" role="status"></p>
+      <div class="dialog-actions"><button type="button" data-close="ml-data-dialog">취소</button><button type="submit" class="primary">이 폴더에 등록</button></div>
     </form>
   </dialog>
 </body>

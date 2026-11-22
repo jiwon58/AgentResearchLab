@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 
 export const legacyRoles = ['director', 'evidence', 'hypothesis', 'skeptic', 'methodology', 'experiment', 'evolution'] as const;
 export const councilRoles = [...legacyRoles, 'argumentation', 'moderator', 'severity', 'programme'] as const;
-export const roles = [...councilRoles, 'meta-reviewer'] as const;
+const residentRoles = [...councilRoles, 'meta-reviewer'] as const;
+const dataRoles = ['data-collector', 'data-quality'] as const;
+export const roles = [...residentRoles, ...dataRoles] as const;
 export type Role = (typeof roles)[number];
 export const actionRoles = {
   INVESTIGATE: 'evidence', CHECK_DATA_QUALITY: 'methodology', GENERATE_HYPOTHESES: 'hypothesis', CRITIQUE: 'skeptic',
@@ -13,6 +15,7 @@ export const actionRoles = {
   AUDIT_SEVERITY: 'severity', REVIEW_PROGRAMME: 'programme',
   REVIEW_STAGNATION: 'meta-reviewer',
   PLAN_PRESET_STUDY: 'hypothesis', RUN_PRESET_TRIAL: 'experiment', VALIDATE_PRESET_TRIAL: 'methodology',
+  COLLECT_ML_DATA: 'data-collector', PROFILE_ML_DATA: 'data-quality',
   DELEGATE_NATIVE_REVIEW: 'methodology',
 } as const satisfies Record<string, Role>;
 export type Action = keyof typeof actionRoles;
@@ -36,14 +39,18 @@ const presetTrialRequirements: Partial<Record<Action, Action[]>> = {
   PLAN_PRESET_STUDY: [], RUN_PRESET_TRIAL: ['PLAN_PRESET_STUDY'], VALIDATE_PRESET_TRIAL: ['RUN_PRESET_TRIAL'], COMPLETE: ['VALIDATE_PRESET_TRIAL'],
 };
 const presetPlanningRequirements: Partial<Record<Action, Action[]>> = { PLAN_PRESET_STUDY: [], COMPLETE: ['PLAN_PRESET_STUDY'] };
-export const isTrialPreset = (plan: Plan) => plan.researchType === 'ml-optimization' || plan.researchType === 'algorithm-research';
-export const researchRequirements = (plan: Plan) => plan.researchType !== 'causal-discovery'
+const tabularRequirements: Partial<Record<Action, Action[]>> = {
+  COLLECT_ML_DATA: [], PROFILE_ML_DATA: ['COLLECT_ML_DATA'], PLAN_PRESET_STUDY: ['PROFILE_ML_DATA'],
+  RUN_PRESET_TRIAL: ['PLAN_PRESET_STUDY'], VALIDATE_PRESET_TRIAL: ['RUN_PRESET_TRIAL'], COMPLETE: ['VALIDATE_PRESET_TRIAL'],
+};
+export const isTrialPreset = (plan: Plan) => ['tabular-ml', 'ml-optimization', 'algorithm-research'].includes(plan.researchType);
+export const researchRequirements = (plan: Plan) => plan.researchType === 'tabular-ml' ? tabularRequirements : plan.researchType !== 'causal-discovery'
   ? isTrialPreset(plan) ? presetTrialRequirements : presetPlanningRequirements
   : plan.reasoning === 'council-v1' ? councilPrerequisites : prerequisites;
 export const availableActions = (plan: Plan) => [...new Set(['REPLAN', 'REVIEW_STAGNATION', ...Object.keys(researchRequirements(plan)),
   ...(plan.native?.length ? ['DELEGATE_NATIVE_REVIEW'] : []),
   ...(plan.researchType === 'causal-discovery' ? ['INVESTIGATE', 'CHECK_DATA_QUALITY', 'REQUEST_EVOLUTION'] : [])])] as Action[];
-export const projectRoles = (plan: Plan): readonly Role[] => plan.control === 'adaptive-v2' ? roles
+export const projectRoles = (plan: Plan): readonly Role[] => plan.researchType === 'tabular-ml' ? roles : plan.control === 'adaptive-v2' ? residentRoles
   : plan.reasoning === 'council-v1' ? councilRoles : legacyRoles;
 export type Topology = 'SINGLE_AGENT' | 'PARALLEL_INDEPENDENT' | 'HIERARCHICAL' | 'SCIENTIFIC_DEBATE' | 'DEPENDENCY_DAG';
 export type Decision = 'APPROVED' | 'REJECTED' | 'NEEDS_REVISION' | 'NEEDS_HUMAN_APPROVAL';
@@ -139,10 +146,10 @@ export const rolePhilosophies: Readonly<Record<Role, readonly (keyof typeof phil
   director: ['peirce', 'lakatos'], evidence: ['toulmin', 'mayo'], hypothesis: ['peirce', 'popper', 'lakatos'],
   skeptic: ['popper', 'dung'], methodology: ['toulmin', 'mayo', 'dung'], experiment: ['popper', 'mayo'], evolution: ['lakatos', 'mayo'],
   argumentation: ['toulmin', 'dung'], moderator: ['pragma', 'dung'], severity: ['mayo', 'popper'], programme: ['lakatos', 'peirce'],
-  'meta-reviewer': ['lakatos', 'mayo'],
+  'meta-reviewer': ['lakatos', 'mayo'], 'data-collector': ['toulmin'], 'data-quality': ['mayo', 'popper'],
 });
 
-export const researchTypes = ['causal-discovery', 'ml-optimization', 'idea-discovery', 'algorithm-research', 'custom-research'] as const;
+export const researchTypes = ['causal-discovery', 'ml-optimization', 'tabular-ml', 'idea-discovery', 'algorithm-research', 'custom-research'] as const;
 const strategies = ['deterministic', 'cognitive-director', 'hybrid-adaptive', 'evolutionary-hybrid'] as const;
 export type Strategy = (typeof strategies)[number];
 export type MemoryMode = 'none' | 'private' | 'shared' | 'both';
@@ -156,9 +163,10 @@ export interface Preset {
   evolution: 'static-baseline' | 'quality-diversity';
 }
 export type Plan = Preset & { runtime: 'mock' | 'gjc' | 'router'; runtimeBinding?: string; reasoning?: 'council-v1'; control?: 'adaptive-v2';
-  policy?: { id: string; maxParallel: number }; genome?: { id: string; code: number }; dataset?: string; native?: NativeReview[]; hash: string };
+  policy?: { id: string; maxParallel: number }; genome?: { id: string; code: number }; dataset?: string;
+  mlDataset?: { id: string; kind: 'classification' | 'regression' }; native?: NativeReview[]; hash: string };
 
-export function snapshotRevisions(plan: Plan, revisions: Pick<Plan, 'policy' | 'genome' | 'dataset' | 'native'> & { seed?: number }): Plan {
+export function snapshotRevisions(plan: Plan, revisions: Pick<Plan, 'policy' | 'genome' | 'dataset' | 'mlDataset' | 'native'> & { seed?: number }): Plan {
   const { hash: previous, ...snapshot } = { ...plan, ...revisions };
   return Object.freeze({ ...snapshot, hash: hash(snapshot) });
 }

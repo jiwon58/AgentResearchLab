@@ -1,15 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { execFile, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { extname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compilePreset, hash, isRecord, readOnlyNative, snapshotRevisions, type NativeReview, type Preset } from '../../packages/research/contracts.ts';
 import { GjcAgentRuntime, MockAgentRuntime, proposal, type AgentRuntime } from '../../packages/research/agents.ts';
 import { compareResearch, demoObjective } from '../../packages/research/benchmark.ts';
 import { compareConnectedResearch } from '../../packages/research/connected-benchmark.ts';
-import { inspectApprovedDataset, readApprovedDataset } from '../../packages/research/artifacts.ts';
+import { inspectApprovedDataset, readApprovedDataset, readApprovedFile } from '../../packages/research/artifacts.ts';
 import { RouterAgentRuntime, RouterClient, RouterError } from '../../packages/research/router.ts';
 import { nativeReviewOption } from '../../packages/research/native-reviews.ts';
+import { MlDataError } from '../../packages/research/data-ml.ts';
 import { startBenchmark, startResearch, workspaceSummary, Workspaces, WorkspaceError } from './workspaces.ts';
 
 const command = process.argv[2] ?? 'serve';
@@ -65,14 +66,17 @@ function pickFolder(binary: string): Promise<string | null> {
   });
 }
 
-async function body(req: IncomingMessage) {
+async function body(req: IncomingMessage, maxBytes = 16_384) {
   if (!req.headers['content-type']?.startsWith('application/json')) throw new Error('JSON body required');
-  let data = '';
+  const chunks: Buffer[] = [];
+  let bytes = 0;
   for await (const chunk of req) {
-    data += chunk.toString();
-    if (data.length > 16_384) throw new Error('Request too large');
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += data.length;
+    if (bytes > maxBytes) throw new Error('Request too large');
+    chunks.push(data);
   }
-  return JSON.parse(data) as unknown;
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }
 
 function send(res: ServerResponse, status: number, payload: unknown) {
@@ -138,8 +142,10 @@ async function serve(workspaces: Workspaces, open = false) {
       if (!workspace) return send(res, 404, { error: '작업 폴더를 다시 연결하세요.' });
       const { store, runtime, orchestrator } = workspace;
       if (req.method === 'GET' && path === '/api/research') {
-        return send(res, 200, { runtime: runtime.kind, defaults: compileRun(runtime), runs: store.list(), datasets: store.datasets(), workspace: workspaceSummary(workspace) });
+        return send(res, 200, { runtime: runtime.kind, defaults: compileRun(runtime), runs: store.list(), datasets: store.datasets(),
+          mlDatasets: store.mlDatasets(), workspace: workspaceSummary(workspace) });
       }
+      if (req.method === 'POST' && path === '/api/ml-datasets' && scope) return send(res, 201, store.registerMlDataset(await body(req, 6_010_000)));
       if (req.method === 'GET' && path === '/api/comparisons') {
         if (!scope) return send(res, 200, store.comparisons());
         const id = url.searchParams.get('id');
@@ -171,7 +177,8 @@ async function serve(workspaces: Workspaces, open = false) {
         if (!isRecord(settings) || Object.keys(settings).some(key => !['researchType', 'strategy', 'seed', 'timeoutMs', 'maxTasks', 'maxParallel', 'retries', 'memory', 'evolution'].includes(key))) {
           throw new WorkspaceError('지원되는 연구 설정만 입력하세요.');
         }
-        const plan = store.withOperationalRevisions(store.withApprovedDataset(compileRun(runtime, settings), input.dataset));
+        const registered = store.withMlDataset(compileRun(runtime, settings), input.mlDataset);
+        const plan = store.withOperationalRevisions(store.withApprovedDataset(registered, input.dataset));
         const run = store.create(input.objective, plan);
         return send(res, 201, run);
       }
@@ -214,7 +221,8 @@ async function serve(workspaces: Workspaces, open = false) {
       }
       send(res, 404, { error: 'Route unavailable' });
     } catch (error) {
-      send(res, 400, { error: error instanceof WorkspaceError ? error.message : '요청을 처리하지 못했습니다. 연구 상태와 설정을 확인하세요.' });
+      send(res, 400, { error: error instanceof WorkspaceError || error instanceof MlDataError
+        ? error.message : '요청을 처리하지 못했습니다. 연구 상태와 설정을 확인하세요.' });
     }
   });
   server.requestTimeout = 30_000;
@@ -269,6 +277,20 @@ async function main() {
       console.log(JSON.stringify(store.registerDataset(records, version), null, 2));
       return;
     }
+    if (command === 'import-ml-data') {
+      const { LAB_APPROVED_DATA_FILE, LAB_ML_KIND, LAB_ML_TARGET, LAB_ML_FEATURES, LAB_ML_GROUP, LAB_ML_SPLIT, LAB_ML_DELIMITER } = process.env;
+      if (!LAB_APPROVED_DATA_FILE) throw new MlDataError('LAB_APPROVED_DATA_FILE에 등록할 파일의 절대 경로를 지정하세요.');
+      console.log(JSON.stringify(store.registerMlDataset({ content: readApprovedFile(LAB_APPROVED_DATA_FILE).toString('utf8'),
+        format: extname(LAB_APPROVED_DATA_FILE).slice(1).toLowerCase(), target: LAB_ML_TARGET, features: LAB_ML_FEATURES?.split(','),
+        kind: LAB_ML_KIND, group: LAB_ML_GROUP, split: LAB_ML_SPLIT ?? 'grouped', delimiter: LAB_ML_DELIMITER }), null, 2));
+      return;
+    }
+    if (command === 'run-ml') {
+      const plan = store.withMlDataset(compileRun(runtime, { researchType: 'tabular-ml' }), process.env.LAB_ML_DATASET_ID);
+      const run = store.create(process.env.LAB_ML_OBJECTIVE ?? 'Compare registered models on the approved tabular dataset.', plan);
+      console.log(JSON.stringify(await orchestrator.runToCheckpoint(run.id), null, 2));
+      return;
+    }
     if (command === 'benchmark') {
       const full = process.argv.includes('--full');
       const report = connected ? await compareConnectedResearch(runtime, { full, checkpoint: store, kernel,
@@ -283,11 +305,12 @@ async function main() {
       console.log(JSON.stringify(result, null, 2));
       return;
     }
-    throw new Error('Use open, serve, demo, benchmark, inspect-data, import-data or router-probe');
+    throw new Error('Use open, serve, demo, benchmark, inspect-data, import-data, import-ml-data, run-ml or router-probe');
   } finally { await workspaces.close(); }
 }
 
 main().catch((error: unknown) => {
-  console.error(error instanceof RouterError ? error.code : 'Research Lab could not complete the command. Check the local configuration and database.');
+  console.error(error instanceof RouterError ? error.code : error instanceof MlDataError ? error.message
+    : 'Research Lab could not complete the command. Check the local configuration and database.');
   process.exitCode = 1;
 });

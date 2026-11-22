@@ -38,7 +38,7 @@ export class ArtifactStore {
   }
 }
 
-export function readApprovedDataset(file: string) {
+export function readApprovedFile(file: string) {
   if (!isAbsolute(file)) throw new Error('The approved data file must be an absolute path');
   const fd = openSync(file, 'r');
   try {
@@ -52,11 +52,15 @@ export function readApprovedDataset(file: string) {
       total += count;
     }
     if (total >= singleReadLimit.length) throw new Error('Approved data file is too large');
-    const bytes = singleReadLimit.subarray(0, total);
-    const data: unknown = JSON.parse(bytes.toString('utf8'));
-    if (!Array.isArray(data) || !data.length || !data.every(isRecord)) throw new Error('Expected an array of records');
-    return { records: data, version: digest(bytes) };
+    return singleReadLimit.subarray(0, total);
   } finally { closeSync(fd); }
+}
+
+export function readApprovedDataset(file: string) {
+  const bytes = readApprovedFile(file);
+  const data: unknown = JSON.parse(bytes.toString('utf8'));
+  if (!Array.isArray(data) || !data.length || !data.every(isRecord)) throw new Error('Expected an array of records');
+  return { records: data, version: digest(bytes) };
 }
 
 export function inspectApprovedDataset(file: string) {

@@ -1,11 +1,13 @@
 import { hash, isRecord, type Preset } from './contracts.ts';
 import { random } from './science.ts';
+import { mlCandidates, type MlKind } from './data-ml.ts';
 
 const catalogue: Partial<Record<Preset['researchType'], readonly string[]>> = {
   'algorithm-research': ['insertion-sort', 'merge-sort', 'selection-sort'],
   'ml-optimization': ['majority', 'single-feature-threshold', 'linear-centroid'],
 };
-export const availablePresetCandidates = (type: Preset['researchType']) => catalogue[type] ?? [];
+export const availablePresetCandidates = (type: Preset['researchType'], mlKind?: MlKind): readonly string[] =>
+  type === 'tabular-ml' && mlKind ? mlCandidates[mlKind] : catalogue[type] ?? [];
 
 export interface PresetStudy {
   question: string;
@@ -14,9 +16,9 @@ export interface PresetStudy {
 }
 
 const bounded = (value: unknown): value is string => typeof value === 'string' && Boolean(value.trim()) && value.length <= 600;
-export function readPresetStudy(input: unknown, type: Preset['researchType']): PresetStudy {
+export function readPresetStudy(input: unknown, type: Preset['researchType'], mlKind?: MlKind): PresetStudy {
   if (!isRecord(input) || !bounded(input.question)) throw new Error('Expected a research question');
-  const allowed = availablePresetCandidates(type);
+  const allowed = availablePresetCandidates(type, mlKind);
   if (allowed.length) {
     if (!Array.isArray(input.candidates) || input.candidates.length < 2 || input.candidates.length > allowed.length
       || new Set(input.candidates).size !== input.candidates.length || !input.candidates.every(name => allowed.includes(name))
