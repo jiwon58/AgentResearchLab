@@ -10,6 +10,10 @@ Windows에서 연구를 설정하고 실험과 Agent 평가를 실행하는 로�
 2. **새 연구**에서 목표, 연구 유형, 오케스트레이션, 메모리, 시드와 작업 한도를 선택합니다. 제조 공정 연관성, 합성 분류 모델 비교, 정렬 알고리즘 비교에는 실행 가능한 등록 실험이 있습니다. 아이디어 및 사용자 연구 설계는 반증 계획을 저장하고 결론을 보류합니다. 생성 당시 설정은 해당 연구에 고정됩니다.
 3. **연구 실행**을 누르면 **진행 개요**에 작업 진행률과 실험·재검증 결과가 표시됩니다. 가설이 있는 종료 또는 일시정지 연구에서 **가설 분기 연구**를 눌러 상위 가설과 예측을 비교할 수 있습니다. **진화 및 비교 평가**에서 평가를 실행하고 같은 폴더의 과거 결과를 다시 열 수 있습니다.
 
+- **실험 흐름**에서 작업을 선택하면 담당 Agent, 선행 의존성, 실행 이력과 결과를 볼 수 있습니다. 단계별 보기와 실험 기록은 [The AI Scientist-v2](https://arxiv.org/abs/2504.08066)의 단계적 탐색 및 [W3C PROV-DM](https://www.w3.org/TR/prov-dm/)의 출처 추적 방식을 참고했습니다.
+- **연구 진화**는 상위·분기 연구와 가설 버전의 실제 연결을 표시합니다. 분기 간 데이터 재사용 여부와 새 예측의 독립 검증 여부도 확인할 수 있습니다.
+- **에이전트 진화**에서는 역할별로 이 연구에 고정된 Seed 또는 승인 Genome과 해당 작업의 개선 근거를 확인합니다. **진화 및 비교 평가**에는 합성 평가의 세대별 개발 점수, 선택 Genome 계보, 행동 특성 조합별 [MAP-Elites](https://arxiv.org/abs/1504.04909) 셀이 표시됩니다.
+
 선택한 폴더의 기록은 다음과 같이 함께 보관됩니다.
 
 ```text
@@ -100,14 +104,27 @@ node scripts/gjc-windows-compat.mjs --bun $approvedBunExe --bundle $approvedBund
 node scripts/gjc-windows-compat.mjs --bun $approvedBunExe --bundle $approvedBundleRoot --provider-module $approvedProviderModule
 ```
 
-기동 진단 후 실제 사내 모델을 연결하려면 승인된 호스트에서 세 환경 변수를 설정합니다.
+기동 진단 후 실제 사내 모델을 연결하려면 승인된 호스트에서 다음 환경 변수를 설정합니다.
 
 | 변수 | 값 |
 | --- | --- |
 | `LAB_GJC_BUNDLE` | `node_modules/@gajae-code`가 있는 승인된 번들 루트의 절대 경로 |
 | `LAB_APPROVED_PROVIDER` | `getApprovedBinding()`을 내보내는 운영자 작성 모듈. 반환값은 사내 모델로 고정한 SDK `model`, `modelRegistry`, `authStorage` 객체 |
 | `LAB_GJC_SESSION_ROOT` | 작업 폴더를 선택하지 않은 기존 `LAB_DB` 모드의 세션 저장 폴더. 작업 폴더 연결 모드는 해당 폴더의 `.gajae-lab/sessions/` 사용 |
+| `LAB_GJC_NATIVE_REVIEW` | `1`이면 기본 읽기 전용 연구 검토를 활성화. Provider가 자체 검토 어댑터를 제공하면 그 어댑터가 우선 |
 
-운영자 모듈과 SDK는 신뢰된 호스트 코드입니다. 사내 모델만 접근 가능한 OS 네트워크 정책을 이 호스트에 적용하고, SDK 세션 디렉터리를 한 GJC 호스트 프로세스에서 사용합니다. 자격증명은 운영자 모듈이 관리합니다. 실제 진단에 필요하면 `--env-name LAB_APPROVED_...`으로 전달할 환경 변수 이름을 지정합니다. 진단은 승인 모델의 응답, 이벤트, 세션 복원, 병렬 세션 분리를 확인합니다. 이 환경에서는 로컬 대역을 테스트했고 실제 Bun/GJC 호출은 승인 번들이 없어 대기 중입니다.
+운영자 모듈과 SDK는 신뢰된 호스트 코드입니다. 사내 모델만 접근 가능한 OS 네트워크 정책을 이 호스트에 적용하고, SDK 세션 디렉터리를 한 GJC 호스트 프로세스에서 사용합니다. 자격증명은 운영자 모듈이 관리합니다. 실제 진단에 필요하면 `--env-name LAB_APPROVED_...`으로 전달할 환경 변수 이름을 지정합니다. Windows x64에서 Bun 1.4.5와 GJC SDK 0.22.0을 로컬 Router 목업에 연결해 SDK 응답, 이벤트, 세션 복원, 병렬 세션 및 합성 제조 연구를 검증했습니다. 실제 사내 Provider 검증은 남아 있습니다.
+
+`LAB_GJC_NATIVE_REVIEW=1`을 설정한 뒤 새 연구의 **작업 및 승인**에서 단계별 검토를 요청합니다. 요청 당시 완료된 관련 작업을 근거로 고정하며, 실행에는 운영자 승인이 필요합니다.
+
+| 검토 역할 | 연구 단계와 산출물 |
+| --- | --- |
+| `deep-interview` | 초기 질문 구체화. 내장 Planner가 미확정 대상·비교군·측정값·반증 조건에 대한 질문을 제안 |
+| `planner` | 가설 이후 실험 계획, 기준선, 개발·보류 데이터 분할을 검토 |
+| `architect` | 실험 설계의 데이터 경계와 재현성 점검 |
+| `critic` | 대안 설명, 측정 신뢰성, 검정력과 반증 기준 점검 |
+| `ralplan` | Planner → Architect → Critic 순서로 계획을 검토하고 각 자문을 기록 |
+
+검토 결과는 자문으로 저장됩니다. 실험 전 자문은 관련 Agent의 계획과 논증에 참고로 전달합니다. 실험 재검증 후에 작성된 자문은 별도 기록에서 확인할 수 있습니다. 새 근거가 쌓이면 같은 역할로 검토를 다시 요청할 수 있습니다.
 
 [Agent Lab 구축 후속 검토](docs/agent-lab-build-review.md) · [초기 설계 및 검증](docs/implementation-and-verification.md) · [과학 추론 Council](docs/scientific-reasoning.md) · [SDK 사전 조사](docs/agent-orchestration-integration-review.md)

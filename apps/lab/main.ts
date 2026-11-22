@@ -3,12 +3,13 @@ import { execFile, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { compilePreset, isRecord, readOnlyNative, snapshotRevisions, type NativeReview, type Preset } from '../../packages/research/contracts.ts';
+import { compilePreset, hash, isRecord, readOnlyNative, snapshotRevisions, type NativeReview, type Preset } from '../../packages/research/contracts.ts';
 import { GjcAgentRuntime, MockAgentRuntime, proposal, type AgentRuntime } from '../../packages/research/agents.ts';
 import { compareResearch, demoObjective } from '../../packages/research/benchmark.ts';
 import { compareConnectedResearch } from '../../packages/research/connected-benchmark.ts';
 import { inspectApprovedDataset, readApprovedDataset } from '../../packages/research/artifacts.ts';
 import { RouterAgentRuntime, RouterClient, RouterError } from '../../packages/research/router.ts';
+import { nativeReviewOption } from '../../packages/research/native-reviews.ts';
 import { startBenchmark, startResearch, workspaceSummary, Workspaces, WorkspaceError } from './workspaces.ts';
 
 const command = process.argv[2] ?? 'serve';
@@ -37,7 +38,7 @@ function configuredRouter(): RouterClient | undefined {
 
 function compileRun(runtime: AgentRuntime, input: unknown = {}) {
   if (!isRecord(input)) throw new WorkspaceError('연구 설정 형식이 올바르지 않습니다.');
-  const timeout = runtime.kind === 'router' ? process.env.LAB_ROUTER_TIMEOUT_MS : undefined;
+  const timeout = runtime.kind === 'router' ? process.env.LAB_ROUTER_TIMEOUT_MS : runtime.nativeReviews?.length ? 60_000 : undefined;
   try {
     const plan = compilePreset({ ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) }), ...input } as Partial<Preset>, runtime.kind, runtime.bindingId);
     return runtime.kind === 'gjc' && runtime.nativeReviews?.length ? snapshotRevisions(plan, { native: [...runtime.nativeReviews] }) : plan;
@@ -98,7 +99,8 @@ async function serve(workspaces: Workspaces, open = false) {
   let pickerOpen = false;
   const picker = localKernelWith('folder-picker-available', 'windows-folder-picker/v1');
   const assets = new Map([
-    ['/', ['text/html', 'index.html']], ['/dashboard.js', ['text/javascript', 'dashboard.js']], ['/dashboard.css', ['text/css', 'dashboard.css']],
+    ['/', ['text/html', 'index.html']], ['/dashboard.js', ['text/javascript', 'dashboard.js']],
+    ['/diagrams.js', ['text/javascript', 'diagrams.js']], ['/dashboard.css', ['text/css', 'dashboard.css']],
   ].map(([route, [mime, file]]) => [route, { mime, bytes: readFileSync(new URL(`./web/${file}`, import.meta.url)) }]));
   const server = createServer(async (req, res) => {
     res.setHeader('cache-control', 'no-store');
@@ -200,7 +202,10 @@ async function serve(workspaces: Workspaces, open = false) {
           if (action === 'native-review') {
             const name = isRecord(input) ? input.name as NativeReview : undefined;
             if (!name || !readOnlyNative.includes(name) || !run.plan.native?.includes(name)) throw new WorkspaceError('이 연구에서 활성화된 읽기 전용 Native 리뷰가 아닙니다.');
-            const suggested = { ...proposal(run, 'DELEGATE_NATIVE_REVIEW', 'director', [], `-${name}`), native_review: name };
+            const option = nativeReviewOption(name, store.tasks(project));
+            const suggested = { ...proposal(run, 'DELEGATE_NATIVE_REVIEW', 'director', option.dependencies,
+              `-${name}-${hash(option.dependencies).slice(0, 16)}`),
+              objective: option.description, native_review: name };
             return send(res, 202, store.submit(project, 'director', suggested));
           }
           return scope ? send(res, 202, { started: startResearch(workspace, project) })
@@ -252,7 +257,8 @@ async function main() {
     if (!LAB_GJC_BUNDLE || !LAB_APPROVED_PROVIDER || !sessions) throw new Error('Incomplete GJC host settings');
     if (!Object.hasOwn(process.versions, 'bun')) throw new Error('GJC host requires Bun');
     const provider = await import(pathToFileURL(resolve(LAB_APPROVED_PROVIDER)).href);
-    return GjcAgentRuntime.fromApprovedBundle(store, LAB_GJC_BUNDLE, sessions, await provider.getApprovedBinding(), workspace?.root);
+    return GjcAgentRuntime.fromApprovedBundle(store, LAB_GJC_BUNDLE, sessions, await provider.getApprovedBinding(), workspace?.root,
+      process.env.LAB_GJC_NATIVE_REVIEW === '1');
   }, logic);
   if (command === 'serve' || command === 'open') return await serve(workspaces, command === 'open');
   const { store, orchestrator, runtime } = process.env.LAB_WORKSPACE ? await workspaces.connect(process.env.LAB_WORKSPACE) : await workspaces.legacy(dbFile);

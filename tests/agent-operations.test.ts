@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { MockAgentRuntime, proposal, type AgentContext, type AgentRuntime } from '../packages/research/agents.ts';
-import { compilePreset, snapshotRevisions } from '../packages/research/contracts.ts';
+import { compilePreset, snapshotRevisions, type NativeReview } from '../packages/research/contracts.ts';
+import { nativeReviewEvidence, nativeReviewOption } from '../packages/research/native-reviews.ts';
 import { ResearchOrchestrator } from '../packages/research/orchestrator.ts';
 import { comparePaired, type TrialMetrics } from '../packages/research/revisions.ts';
 import { parseMeasurements, type Row } from '../packages/research/science.ts';
@@ -80,6 +81,20 @@ test('promotion rechecks independent paired trials, rejects regressions, and aff
     assert.equal(store.run(current.id).plan.policy?.id, active.id);
     assert.equal(store.withOperationalRevisions(plan).policy, undefined);
     assert.equal(store.revisionStatus(binding).actions.length, 2);
+
+    const withGenome = compilePreset({ evolution: 'quality-diversity' }, 'router', binding);
+    const approveGenome = (code: number, parentId: string | null, quality: number) => store.activateRevision('genome', binding, store.comparison({
+      ...benchmark(binding),
+      candidates: { genome: { configuration: { code }, parentId, baseline: trials.map(item => ({ ...item, quality })),
+        candidate: trials.map(item => ({ ...item, quality: quality + 1 })) } },
+    }));
+    const first = approveGenome(1, null, 12);
+    const second = approveGenome(3, first.id, 13);
+    const applied = store.create('Genome chain frozen in this study', store.withOperationalRevisions(withGenome));
+    store.rollbackRevision('genome', binding, second.id);
+    assert.deepEqual(store.genomeLineage(store.run(applied.id).plan).map(item => [item.id, item.parent_id, item.code]),
+      [[first.id, null, 1], [second.id, first.id, 3]]);
+    assert.deepEqual(store.genomeLineage({ ...applied.plan, runtimeBinding: 'different-router' }), []);
   } finally { store.close(); }
 });
 
@@ -162,6 +177,43 @@ test('Native review requires an approved read-only capability and an explicit op
   } finally { store.close(); }
 });
 
+test('different native roles share a research checkpoint and pending review remains approvable at completion', async () => {
+  const store = await openStore(':memory:');
+  try {
+    const names = ['planner', 'architect', 'critic'] as const;
+    const mock = new MockAgentRuntime();
+    const called: NativeReview[] = [];
+    const fixture: AgentRuntime = { kind: 'gjc', nativeReviews: [...names], think: mock.think.bind(mock),
+      async nativeReview(name) { called.push(name); return { summary: `Advisory ${name}` }; },
+    };
+    const lab = new ResearchOrchestrator(store, fixture);
+    const run = store.create('Evaluate a research plan with multiple independent reviewers',
+      snapshotRevisions(compilePreset({}, 'gjc'), { native: [...names] }));
+    const queue = (name: NativeReview) => {
+      const request = { ...proposal(run, 'DELEGATE_NATIVE_REVIEW', 'director', [], `-${name}`), native_review: name };
+      assert.equal(store.submit(run.id, 'director', request).decision, 'NEEDS_HUMAN_APPROVAL');
+      return request.proposal_id;
+    };
+    const planner = queue('planner');
+    const architect = queue('architect');
+    const critic = queue('critic');
+    assert.equal(store.reviewProposal(run.id, planner, true).decision, 'APPROVED');
+    assert.equal(store.reviewProposal(run.id, architect, true).decision, 'APPROVED');
+    const waiting = await lab.runToCheckpoint(run.id);
+    assert.deepEqual(called, ['planner', 'architect']);
+    assert.equal(waiting.run.status, 'ACTIVE');
+    assert(waiting.tasks.some(task => task.action === 'COMPLETE' && task.status === 'DONE'));
+    assert(nativeReviewOption('critic', waiting.tasks).recommended);
+    assert(nativeReviewEvidence('critic', waiting.tasks).some(item => item.action === 'VALIDATE_RESULT'));
+    assert(nativeReviewEvidence('critic', waiting.tasks).every(item => item.action !== 'RUN_EXPERIMENT'));
+    assert.doesNotMatch(JSON.stringify(nativeReviewEvidence('critic', waiting.tasks)), /artifact|dataDigest|observed/);
+    assert.equal(store.reviewProposal(run.id, critic, true).decision, 'APPROVED');
+    const settled = await lab.runToCheckpoint(run.id);
+    assert.deepEqual(called, ['planner', 'architect', 'critic']);
+    assert.equal(settled.run.status, 'INCONCLUSIVE');
+  } finally { store.close(); }
+});
+
 test('a research branch keeps lineage, compares preregistered novelty, and withholds claims for reused measurements', async () => {
   const store = await openStore(':memory:');
   class BranchRuntime extends MockAgentRuntime {
@@ -185,6 +237,8 @@ test('a research branch keeps lineage, compares preregistered novelty, and withh
     assert.notEqual(store.member(branch.id, 'hypothesis').session_key, store.member(parent.id, 'hypothesis').session_key);
     const forked = await lab.runToCheckpoint(branch.id);
     assert.equal(forked.branch?.parent, parent.id);
+    assert.equal(forked.researchRelations.parent?.objective, parent.objective);
+    assert.deepEqual(lab.view(parent.id).researchRelations.children.map(item => item.id), [branch.id]);
     assert.equal((forked.researchLedger.programme as { classification: string }).classification, 'TESTABLE_PROGRESS');
     assert.equal(forked.run.status, 'INCONCLUSIVE');
     const sample = Array.from({ length: 240 }, (_, hour) => ({ hour, batch: Math.floor(hour / 30), phase: 0,

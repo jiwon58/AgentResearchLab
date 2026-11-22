@@ -1,3 +1,5 @@
+import { diagram, el } from './diagrams.js';
+
 const $ = selector => document.querySelector(selector);
 const content = $('#content');
 const notice = $('#notice');
@@ -32,20 +34,15 @@ const names = {
   'task.cancelled': '작업 취소', 'task.lease_expired': '중단된 작업 복구', 'agent.delegated': '에이전트 위임',
   'proposal.decided': '제안에 대한 정책 결정', 'proposal.human_review': '사용자 승인 검토', 'topology.selected': '실행 구조 결정', 'stagnation.detected': '진행 정체 감지',
 };
-const tabs = { overview: '진행 개요', council: '가설과 논증', agents: '에이전트', orchestration: '작업 및 승인' };
+const tabs = { overview: '진행 개요', experiments: '실험 흐름', lineage: '연구 진화', evolution: '에이전트 진화',
+  council: '가설과 논증', agents: '에이전트', orchestration: '작업 및 승인' };
 const time = new Intl.DateTimeFormat('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+const dateTime = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' });
 let context = null;
 let switching = false;
 let pickerAvailable = false;
 
 const label = value => names[value] ?? value ?? '—';
-function el(tag, text, className) {
-  const element = document.createElement(tag);
-  if (text != null) element.textContent = text;
-  if (className) element.className = className;
-  return element;
-}
-
 function badge(status) {
   const tone = ['DONE', 'SUCCESS', 'PASS', 'APPROVED'].includes(status) ? 'good'
     : ['PAUSED', 'NEEDS_HUMAN', 'NEEDS_HUMAN_APPROVAL', 'NEEDS_REVISION'].includes(status) ? 'attention'
@@ -175,7 +172,8 @@ async function connect(load) {
 }
 
 async function activate(workspace) {
-  const state = { workspace, selected: null, comparison: null, tab: 'overview', page: 'research', pending: false, signature: '', runs: [], listSignature: '' };
+  const state = { workspace, selected: null, comparison: null, diagramSelection: {}, tab: 'overview', page: 'research',
+    pending: false, signature: '', runs: [], listSignature: '' };
   const listing = await scoped(state, '/research');
   state.defaults = listing.defaults;
   state.datasets = listing.datasets ?? [];
@@ -302,8 +300,166 @@ function council(view) {
     ...(view.scientificSim.harnessCandidates.length ? [details('독립 검증 대기 Harness 개선 후보', view.scientificSim.harnessCandidates)] : []))] : [])];
 }
 
+function experimentFlow(state, view) {
+  const { tasks, events, researchLedger, progressLedger } = view;
+  const clockEvents = events.filter(event => ['task.claimed', 'task.settled', 'task.cancelled', 'task.lease_expired'].includes(event.kind));
+  const byTask = Map.groupBy(clockEvents, event => event.payload.id);
+  const nodes = tasks.map(task => ({
+    id: task.id, title: label(task.action), caption: label(task.role), parents: task.proposal.dependencies, badge: badge(task.status), task,
+  }));
+  const volume = el('div', undefined, 'diagram-counts');
+  for (const [name, count] of [['완료', progressLedger.completed], ['실행·대기', progressLedger.pending], ['실패', progressLedger.failed]]) {
+    volume.append(el('span', name + ' ' + count));
+  }
+  const graph = nodes.length ? diagram(nodes, '실험 작업 의존성', state.diagramSelection.experiment,
+    id => { state.diagramSelection.experiment = id; }, ({ task }) => {
+      const info = el('div');
+      const taskNames = new Map(tasks.map(item => [item.id, label(item.action)]));
+      const events = byTask.get(task.id) ?? [];
+      info.append(el('h3', label(task.action)), el('p', task.proposal.objective),
+        table(['담당', '선행 작업', '실행 시도', '상태'], [[label(task.role),
+          task.proposal.dependencies.map(id => taskNames.get(id) ?? id).join(', ') || '없음', task.attempt, badge(task.status)]]));
+      if (events.length) info.append(table(['시간', '이벤트', '결과'], events.map(event => [
+        time.format(event.created_at), label(event.kind), event.payload.reason ?? (event.payload.status ? label(event.payload.status) : null),
+      ])));
+      if (task.result != null) info.append(details('저장된 작업 결과', task.result));
+      return info;
+    }) : el('p', '연구를 실행하면 작업 의존성이 여기에 표시됩니다.', 'muted');
+  const phases = [
+    ['계획과 근거', ['REPLAN', 'INVESTIGATE', 'CHECK_DATA_QUALITY', 'PLAN_PRESET_STUDY']],
+    ['가설과 검토', ['GENERATE_HYPOTHESES', 'CRITIQUE', 'CONSTRUCT_ARGUMENTS', 'OPEN_DEBATE', 'MODERATE_DEBATE', 'REVIEW_ARGUMENTS']],
+    ['실험 설계와 실행', ['DESIGN_EXPERIMENT', 'AUDIT_SEVERITY', 'RUN_EXPERIMENT', 'RUN_PRESET_TRIAL']],
+    ['검증과 수정', ['VALIDATE_RESULT', 'VALIDATE_PRESET_TRIAL', 'REFINE_HYPOTHESES', 'REVIEW_PROGRAMME', 'COMPLETE']],
+  ];
+  const stages = el('div', undefined, 'diagram-stages');
+  const graphRegion = graph.querySelector('.diagram-viewport');
+  for (const [name, actions] of phases) {
+    const matches = tasks.filter(task => actions.includes(task.action));
+    if (!matches.length) continue;
+    const target = matches.find(task => task.status !== 'DONE') ?? matches.at(-1);
+    const control = button(name, () => {
+      const node = graphRegion.querySelector(`[data-node-id="${CSS.escape(target.id)}"]`);
+      node.click();
+      node.focus({ preventScroll: true });
+      node.scrollIntoView({ block: 'nearest', inline: 'center' });
+    });
+    control.append(el('span', ` · ${matches.filter(task => task.status === 'DONE').length}/${matches.length}`));
+    stages.append(control);
+  }
+  const provenance = [];
+  if (researchLedger.plan?.digest) provenance.push(['실험 사전등록', researchLedger.plan.digest]);
+  if (researchLedger.plan?.datasetVersion || view.run.plan.dataset) provenance.push(['데이터 버전', researchLedger.plan?.datasetVersion ?? view.run.plan.dataset]);
+  if (progressLedger.experiment?.artifact?.sha256) provenance.push(['실험 산출물 SHA-256', progressLedger.experiment.artifact.sha256]);
+  if (progressLedger.validation) provenance.push(['독립 재현', badge(progressLedger.validation.independentReproducibility)]);
+  return [panel('실험 작업 흐름', volume, ...(stages.childElementCount ? [stages] : []),
+    el('p', '화살표는 저장된 선행 작업 관계입니다. 작업을 선택하면 실행 기록을 볼 수 있습니다.', 'muted'), graph),
+    ...(provenance.length ? [panel('데이터와 검증 기록', table(['기록', '값'], provenance))] : [])];
+}
+
+function researchEvolution(state, view) {
+  const { run, researchRelations, researchLedger, branch } = view;
+  const { parent, children } = researchRelations;
+  const scope = item => item.independent_partition ? '별도 합성 데이터 분할' : '같은 승인 데이터 사용';
+  const neighbours = [...(parent ? [parent] : []), ...children];
+  const lineage = diagram([
+    ...(parent ? [{ id: parent.id, title: parent.objective, caption: '상위 연구', parents: [], badge: badge(parent.status) }] : []),
+    { id: run.id, title: run.objective, caption: '현재 연구', parents: parent ? [parent.id] : [], badge: badge(run.status) },
+    ...children.map(child => ({ id: child.id, title: child.objective, caption: '분기 연구', parents: [run.id], badge: badge(child.status) })),
+  ], '연구 분기 계보', state.diagramSelection.research ?? run.id, id => { state.diagramSelection.research = id; }, node => {
+    const relation = neighbours.find(item => item.id === node.id);
+    const info = el('div');
+    info.append(el('h3', node.title));
+    if (relation) info.append(el('p', scope(relation)), button('이 연구 열기', () => openRun(state, relation.id, 'lineage')));
+    else if (branch) info.append(el('p', branch.independentPartition ? '상위 연구와 별도 합성 데이터 분할' : '상위 연구와 같은 승인 데이터 사용'));
+    else if (!children.length) info.append(el('p', '연결된 분기 연구가 없습니다.', 'muted'));
+    return info;
+  });
+  const histories = view.tasks.filter(task => task.status === 'DONE' && ['GENERATE_HYPOTHESES', 'REFINE_HYPOTHESES'].includes(task.action));
+  const hypotheses = [...new Map(histories.flatMap(task => (task.result?.hypotheses ?? []).map(h => [h.id, h]))).values()];
+  const graph = hypotheses.length ? diagram(hypotheses.map(h => ({
+    id: h.id, title: h.id, caption: h.assessmentOnly ? '판정 갱신' : h.parentIds.length ? '수정 가설' : '초기 가설',
+    parents: h.parentIds, badge: h.status ? badge(h.status) : null, hypothesis: h,
+  })), '가설 버전 계보', state.diagramSelection.hypothesis, id => { state.diagramSelection.hypothesis = id; }, ({ hypothesis: h }) => {
+    const info = el('div');
+    info.append(el('h3', h.id), el('p', h.claim),
+      ...(h.assessmentOnly ? [el('p', '실험 후 과학적 판정 갱신', 'muted')] : []), details('예측과 반증 조건', h));
+    return info;
+  }) : el('p', '저장된 가설 수정 이력이 없습니다.', 'muted');
+  const programme = researchLedger.programme;
+  return [panel('연구 분기', lineage), panel('가설 버전', graph),
+    ...(programme ? [panel('새 예측과 독립 확인', badge(programme.gate.status), el('p',
+      `${label(programme.classification)} · 새 예측 ${programme.novelPredictions.length}건 · 독립 확인 ${programme.independentlyConfirmedPredictions.length}건`),
+    details('연구 프로그램 평가', programme))] : []),
+    ...(branch?.hypotheses?.length ? [panel('비교에 사용한 상위 가설', table(['가설', '주장'], branch.hypotheses.map(h => [h.id, h.claim])))] : [])];
+}
+
+function agentEvolution(state, view) {
+  const picker = el('select');
+  picker.setAttribute('aria-label', '진화를 볼 에이전트');
+  for (const agent of view.residents) {
+    const option = el('option', label(agent.role));
+    option.value = agent.role;
+    picker.append(option);
+  }
+  const requested = state.diagramSelection.agent;
+  if (view.residents.some(agent => agent.role === requested)) picker.value = requested;
+  else if (view.residents.some(agent => agent.role === 'hypothesis')) picker.value = 'hypothesis';
+  const field = el('label', '에이전트 역할', 'diagram-field');
+  field.append(picker);
+  const body = el('div');
+  const render = () => {
+    const agent = view.residents.find(item => item.role === picker.value);
+    if (!agent) return;
+    state.diagramSelection.agent = agent.role;
+    const seed = agent.seed?.id ?? `seed-v1:${agent.role}`;
+    const lineage = agent.role === 'hypothesis' ? view.genomeLineage : [];
+    const nodes = [{ id: seed, parents: [], title: '기본 Seed', caption: seed }];
+    for (const revision of lineage) nodes.push({
+      id: revision.id, parents: [revision.parent_id ?? seed], title: revision.id.slice(0, 12),
+      caption: `Genome 코드 ${revision.code}`, revision,
+    });
+    if (!nodes.some(node => node.id === agent.genome)) nodes.push({ id: agent.genome, parents: [], title: agent.genome, caption: '연구에 고정된 Genome' });
+    nodes.find(node => node.id === agent.genome).badge = el('span', '이 연구에 적용', 'badge good');
+    const owned = new Set(view.tasks.filter(task => task.role === agent.role).map(task => task.id));
+    const findings = (view.scientificSim?.findings ?? []).filter(item => owned.has(item.task_id));
+    body.replaceChildren(diagram(nodes, '에이전트 Genome 계보', state.diagramSelection.genome ?? agent.genome,
+      id => { state.diagramSelection.genome = id; }, node => {
+        const info = el('div');
+        info.append(el('h3', node.title));
+        if (node.revision) info.append(el('p', `승인 ${dateTime.format(node.revision.created_at)}`),
+          button('이 버전의 평가 열기', () => openComparison(state, node.revision.benchmark_id)));
+        else info.append(el('p', `연구에 고정된 값 · ${agent.genome}`));
+        return info;
+      }), el('h3', '작업에서 남긴 개선 근거'),
+    table(['검출 유형', '대상'], findings.map(item => [label(item.category), item.subject]), '이 역할에 연결된 개선 근거가 없습니다.'));
+  };
+  picker.addEventListener('change', () => { state.diagramSelection.genome = null; render(); });
+  render();
+  return [panel('에이전트별 Genome 계보', field, body), panel('후보 비교 평가',
+    el('p', '후보 Genome의 세대별 점수와 MAP-Elites 아카이브는 작업 폴더의 평가 기록에서 볼 수 있습니다.'),
+    button('진화 평가 열기', () => openComparison(state)))];
+}
+
 function workflow(state, view) {
-  const native = (view.run.plan.native ?? []).filter(name => !view.proposals.some(p => p.payload.native_review === name));
+  const native = (view.nativeReviewOptions ?? []).map(option => {
+    const previous = view.proposals.findLast(p => p.payload.native_review === option.name);
+    const task = previous && view.tasks.find(item => item.id === previous.id);
+    const hasNewEvidence = previous && JSON.stringify(previous.payload.dependencies) !== JSON.stringify(option.dependencies);
+    const pending = previous?.decision === 'NEEDS_HUMAN_APPROVAL' || ['QUEUED', 'RUNNING'].includes(task?.status);
+    const canRequest = view.run.status === 'ACTIVE' && (!previous || (hasNewEvidence && !pending));
+    const action = canRequest ? button(`${option.name} 요청`, async () => {
+      await scoped(state, `/research/${view.run.id}/native-review`, { name: option.name });
+      await refresh(state, true);
+    }) : '—';
+    return [option.name, `${option.phase}${option.recommended ? ' · 현재 단계 권장' : ''}`, option.description,
+      task ? badge(task.status) : previous ? badge(previous.decision) : '—', action];
+  });
+  const advisories = view.tasks.filter(task => task.action === 'DELEGATE_NATIVE_REVIEW' && task.status === 'DONE').map(task => {
+    const item = el('div');
+    item.append(el('h3', task.result.name), el('p', task.result.summary));
+    if (task.result.steps?.length > 1) item.append(table(['검토 역할', '자문'], task.result.steps.map(step => [step.agent, step.summary])));
+    return item;
+  });
   const approvals = view.proposals.filter(p => p.decision === 'NEEDS_HUMAN_APPROVAL').map(proposal => {
     const row = el('div', undefined, 'inline');
     const review = async approve => {
@@ -311,14 +467,13 @@ function workflow(state, view) {
       if (context === state) notice.textContent = `${label(outcome.decision)} · ${outcome.reason}`;
       await refresh(state, true);
     };
-    row.append(el('p', proposal.payload.objective), button('승인', () => review(true)), button('거절', () => review(false)));
+    const purpose = proposal.payload.native_review ? `${proposal.payload.native_review} · ${proposal.payload.objective}` : proposal.payload.objective;
+    row.append(el('p', purpose), button('승인', () => review(true)), button('거절', () => review(false)));
     return row;
   });
   const byId = new Map(view.tasks.map(task => [task.id, task]));
-  return [...(native.length && view.run.status === 'ACTIVE' ? [panel('GJC 읽기 전용 검토', ...native.map(name => button(`${name} 요청`, async () => {
-    await scoped(state, `/research/${view.run.id}/native-review`, { name });
-    await refresh(state, true);
-  })))] : []), ...(approvals.length ? [panel('승인 대기', ...approvals)] : []),
+  return [...(native.length ? [panel('GJC 읽기 전용 검토', table(['역할', '연구 단계', '검토 내용', '상태', '조치'], native))] : []),
+    ...(approvals.length ? [panel('승인 대기', ...approvals)] : []), ...(advisories.length ? [panel('Subagent 자문 결과', ...advisories)] : []),
     panel('작업 및 의존성', table(['작업', '담당', '선행 작업', '상태', '조치'], view.tasks.map(task => [label(task.action), label(task.role),
       task.proposal.dependencies.map(id => label(byId.get(id)?.action ?? id)).join(', '), badge(task.status),
       ['QUEUED', 'RUNNING'].includes(task.status) ? button('취소', () => change(state, view.run.id, 'cancel-task', { task: task.id })) : null]))),
@@ -361,12 +516,133 @@ function renderResearch(state, view) {
     nav.append(link);
   }
   const sections = state.tab === 'overview' ? overview(view) : state.tab === 'council' ? council(view)
+    : state.tab === 'experiments' ? experimentFlow(state, view) : state.tab === 'lineage' ? researchEvolution(state, view)
+    : state.tab === 'evolution' ? agentEvolution(state, view)
     : state.tab === 'orchestration' ? workflow(state, view)
       : [panel('에이전트 세션', table(['역할', 'Identity', '상태', 'Genome', '개인 기억', 'SDK 세션'], view.residents.map(agent =>
         [label(agent.role), agent.agent_id?.slice(0, 8), badge(agent.lifecycle), agent.genome, agent.privateMemory, agent.sessionBound ? '연결됨' : '미연결']))),
       panel('에이전트 간 메시지', table(['보낸 역할', '받는 역할', '유형', '작업'], (view.messages ?? []).map(message =>
         [label(message.sender), label(message.recipient), label(message.kind), message.task_id])))];
   content.replaceChildren(heading, nav, ...(view.execution.error ? [el('p', view.execution.error, 'notice')] : []), ...sections);
+}
+
+function evolutionArchive(state, evolution, reportId) {
+  const trials = evolution.conditions.flatMap(condition => (condition.runs ?? [])
+    .filter(run => run.history?.length).map(run => ({ id: `${condition.condition}/${run.seed}`, condition: condition.condition, run })));
+  const chooser = el('select');
+  const field = el('label', '평가 조건과 시드', 'diagram-field');
+  field.append(chooser);
+  for (const trial of trials) {
+    const option = el('option', `${trial.condition} · 시드 ${trial.run.seed}`);
+    option.value = trial.id;
+    chooser.append(option);
+  }
+  const selection = state.archive?.reportId === reportId ? state.archive
+    : { reportId, trialId: trials.find(trial => trial.condition === 'map-elites-sim')?.id ?? trials[0].id };
+  state.archive = selection;
+  chooser.value = selection.trialId;
+  const body = el('div');
+  const percent = score => new Intl.NumberFormat('ko-KR', { style: 'percent', maximumFractionDigits: 1 }).format(score);
+
+  function showTrial() {
+    selection.trialId = chooser.value;
+    const { condition, run } = trials.find(trial => trial.id === chooser.value);
+    const scores = el('ol', undefined, 'generation-list');
+    for (const [generation, candidates] of run.history.entries()) {
+      if (!candidates.length) continue;
+      const score = Math.max(...candidates.map(candidate => candidate.fitness));
+      const meter = el('meter');
+      meter.value = score;
+      meter.setAttribute('aria-label', `세대 ${generation} 개발 최고 점수`);
+      const row = el('li');
+      row.append(el('span', `세대 ${generation}`), meter, el('strong', percent(score)));
+      scores.append(row);
+    }
+    body.replaceChildren(el('h3', '세대별 최고 개발 점수'), scores, el('p',
+      `선택된 Genome의 보류 세트 정확도 ${percent(run.heldOut)} · 기본 Seed ${percent(run.baseline)} · 전이 세트 ${percent(run.transfer)}`));
+
+    const cells = Object.entries(run.archive ?? {});
+    const genomes = new Map((run.lineage ?? []).map(genome => [genome.revision, genome]));
+    function showGenome(genomeId) {
+      const ancestors = new Set();
+      function trace(id) {
+        if (!genomes.has(id) || ancestors.has(id)) return;
+        ancestors.add(id);
+        genomes.get(id).parents.forEach(trace);
+      }
+      trace(genomeId);
+      const path = [...ancestors].map(id => {
+        const item = genomes.get(id);
+        return { id, parents: item.parents, title: id.slice(0, 12), caption: `세대 ${item.generation} · 코드 ${item.code}`,
+          badge: id === run.selected.revision ? el('span', '평가에서 선택', 'badge good') : null, item };
+      });
+      const graph = el('div');
+      graph.append(el('h3', genomeId === run.selected.revision ? '선택된 Genome 계보' : '아카이브 Genome 계보'));
+      if (path.length) graph.append(diagram(path, '평가 Genome 계보', genomeId, null, ({ item }) => {
+        const info = el('div');
+        info.append(el('p', `Genome ${item.revision}`));
+        if (item.parents.length) info.append(el('p', `부모 ${item.parents.map(id => id.slice(0, 12)).join(', ')}`));
+        return info;
+      }));
+      return graph;
+    }
+    const lineage = el('div');
+    const cellsById = new Map(cells);
+    const cellControls = new Map();
+    function highlight(cellId) {
+      selection.cell = cellId;
+      const cell = cellsById.get(cellId);
+      for (const [id, control] of cellControls) control.setAttribute('aria-pressed', String(id === cellId));
+      lineage.replaceChildren(...(cell ? [el('p', `선택한 셀의 개발 점수 ${percent(cell.fitness)} · Genome 코드 ${cell.code}`)] : []),
+        showGenome(cell?.revision ?? run.selected.revision));
+    }
+    if (condition === 'map-elites-sim' && cells.length) {
+      const grid = el('div', undefined, 'archive-grid');
+      const xAxis = Array.from({ length: 7 }, (_, index) => index);
+      const yAxis = Array.from({ length: 4 }, (_, index) => index);
+      grid.append(table(['활성 핵심 신호 수 ↓ / 보정 가중치 합 →', ...xAxis], yAxis.map(y => [y, ...xAxis.map(x => {
+        const id = `${y}:${x}`;
+        const cell = cellsById.get(id);
+        if (!cell) return '—';
+        const control = button(percent(cell.fitness), () => highlight(id), cell.fitness >= 0.9 ? 'archive-cell high' : 'archive-cell');
+        control.setAttribute('aria-label', `활성 핵심 신호 ${y}, 보정 가중치 합 ${x}, 개발 점수 ${percent(cell.fitness)}`);
+        cellControls.set(id, control);
+        return control;
+      })])));
+      body.append(el('h3', 'MAP-Elites 행동 아카이브'), el('p', '채워진 셀은 해당 특성 조합에서 기록된 최고 개발 점수입니다.'), grid,
+        button('선택된 Genome 보기', () => highlight(null)));
+    }
+    highlight(cellsById.has(selection.cell) ? selection.cell : null);
+    body.append(lineage);
+  }
+
+  chooser.addEventListener('change', () => { selection.cell = null; showTrial(); });
+  showTrial();
+  return panel('합성 대리 평가 · Genome 탐색', field, body);
+}
+
+function routerGenomeTree(result) {
+  const development = result.genomeDevelopment ?? [];
+  if (!development.length) return null;
+  const parent = development[0].parent;
+  const selected = result.candidates.genome.configuration.code;
+  const idFor = code => String(code);
+  const nodes = [{ id: idFor(parent), title: `기준 Genome ${parent}`, parents: [] },
+    ...development.map(candidate => ({
+      id: idFor(candidate.code), title: `후보 Genome ${candidate.code}`, parents: [idFor(candidate.parent)],
+      caption: candidate.code === result.guided?.code ? 'Router 제안' : '개발 후보',
+      badge: el('span', candidate.clean ? '개발 실행 재현' : '개발 실행 검토', `badge ${candidate.clean ? 'good' : 'attention'}`),
+      candidate,
+    }))];
+  return panel('Router Genome 개발 비교', diagram(nodes, 'Router Genome 후보 계보', idFor(selected), null, node => {
+    const info = el('div');
+    info.append(el('h3', node.title));
+    if (Number(node.id) === selected) info.append(el('p', `보류 평가에 사용 · ${result.candidates.genome.evaluation.eligible ? '적용 후보' : '적용 보류'}`));
+    if (node.candidate) info.append(table(['개발 시드', '논증·실험 점수', '재현'], node.candidate.rows.map(row => [
+      row.seed, row.quality, badge(row.validated ? 'PASS' : 'FAIL'),
+    ])));
+    return info;
+  }));
 }
 
 function renderComparisons(state, response) {
@@ -376,10 +652,7 @@ function renderComparisons(state, response) {
   const connectedResult = result?.kind === 'ROUTER_CONNECTED_SYNTHETIC_STUDY';
   title.append(el('h1', '진화 및 비교 평가'), el('p', connectedResult ? '구성된 Router 모델을 합성 제조 연구에서 비교했습니다.' : '이 작업 폴더의 합성 연구 평가 기록입니다.'));
   const actions = el('div', undefined, 'actions');
-  const showComparison = async id => {
-    state.comparison = id;
-    await refresh(state, true);
-  };
+  const showComparison = id => openComparison(state, id);
   if (state.comparison) actions.append(button('최신 평가 보기', () => showComparison(null)));
   for (const [name, full] of [['빠른 평가', false], ['전체 평가', true]]) {
     const start = button(name, async () => { await scoped(state, '/comparisons', { full }); await showComparison(null); }, full ? undefined : 'primary');
@@ -412,9 +685,11 @@ function renderComparisons(state, response) {
       [label(row.strategy), row.batches.mean, row.validationRate.mean == null ? null : `${(100 * row.validationRate.mean).toFixed(0)}%`])),
       details('정책 선택 근거', result.policyRevision ?? result.policyDevelopment)),
     ...(result.evolution ? [panel('에이전트 진화', table(['조건', '평가 정확도', '기준 대비 차이', '회귀율'], result.evolution.conditions.map(row =>
-      [row.condition, row.heldOut.mean?.toFixed(3), row.pairedDelta.mean?.toFixed(3), row.regressionRate?.toFixed(3)])), details('Genome 계보, SIM 및 아카이브', result.evolution))] :
+      [row.condition, row.heldOut.mean?.toFixed(3), row.pairedDelta.mean?.toFixed(3), row.regressionRate?.toFixed(3)])), details('Genome 계보, SIM 및 아카이브', result.evolution)),
+      ...(result.evolution.conditions.some(row => row.runs?.some(run => run.history?.length)) ? [evolutionArchive(state, result.evolution, response.results[0].id)] : [])] :
       [panel('승인 대기 후보', table(['대상', '판정', '평균 개선', '적용'], candidates), details('Genome 개발 평가와 모델 제안',
         { development: result.genomeDevelopment, guided: result.guided })),
+      ...(result.genomeDevelopment?.length ? [routerGenomeTree(result)] : []),
       ...(result.agentConditions ? [panel('진화 조건별 Router 재평가', table(['조건', 'Genome', '평균 품질 점수'], result.agentConditions.map(row =>
         [row.condition, row.code, row.quality.mean?.toFixed(2)])))] : [])]),
     ...(active.length ? [panel('적용 중인 버전', table(['대상', '버전', '작업'], active))] : []),
@@ -434,9 +709,11 @@ function paint(state, value, render) {
   if (signature === state.signature) return;
   const openDetails = new Set([...content.querySelectorAll('details[open] > summary')].map(node => node.textContent));
   const activeButton = content.contains(document.activeElement) ? document.activeElement.textContent : null;
+  const scrolls = new Map([...content.querySelectorAll('.diagram-viewport')].map(node => [node.getAttribute('aria-label'), node.scrollLeft]));
   state.signature = signature;
   render(state, value);
   for (const summary of content.querySelectorAll('details > summary')) if (openDetails.has(summary.textContent)) summary.parentElement.open = true;
+  for (const node of content.querySelectorAll('.diagram-viewport')) node.scrollLeft = scrolls.get(node.getAttribute('aria-label')) ?? 0;
   if (activeButton) [...content.querySelectorAll('button')].find(item => item.textContent === activeButton)?.focus({ preventScroll: true });
 }
 
@@ -457,12 +734,21 @@ async function refresh(state, force = false) {
   } finally { if (state.pending === request) state.pending = false; }
 }
 
-async function openRun(state, id) {
+async function openRun(state, id, tab = 'overview') {
   if (context !== state) return;
-  if (state.selected !== id || state.page !== 'research') state.tab = 'overview';
+  if (state.selected !== id) state.diagramSelection = {};
+  if (state.selected !== id || state.page !== 'research') state.tab = tab;
   state.selected = id;
   state.page = 'research';
   state.signature = '';
+  await refresh(state, true);
+}
+
+async function openComparison(state, id = null) {
+  if (context !== state) return;
+  state.page = 'comparisons';
+  state.selected = null;
+  state.comparison = id;
   await refresh(state, true);
 }
 
@@ -485,12 +771,7 @@ $('#create-form').elements.researchType.addEventListener('change', event => {
   if (dataset.disabled) dataset.value = '';
 });
 $('#comparisons').addEventListener('click', () => {
-  if (!context) return;
-  context.page = 'comparisons';
-  context.selected = null;
-  context.comparison = null;
-  context.signature = '';
-  void refresh(context, true).catch(report);
+  if (context) void openComparison(context).catch(report);
 });
 $('#create-form').addEventListener('submit', event => {
   event.preventDefault();

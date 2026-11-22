@@ -11,6 +11,7 @@ import { appendObservedEvidence, auditSeverity, empiricalGate, evaluateProgramme
 import { addAbduction, parseArguments, parseClosing, parseObjections, parseOpening,
   type Closing, type CouncilArgument, type Finding, type Gate, type Objection, type Opening } from '../scientific-reasoning/schema.ts';
 import { readPresetStudy, runPresetStudy, type PresetStudy } from './preset-studies.ts';
+import { nativeReviewEvidence, nativeReviewOption } from './native-reviews.ts';
 
 const resultOf = <T>(tasks: Task[], action: Action) => {
   const match = tasks.filter(task => task.action === action && task.status === 'DONE').at(-1);
@@ -93,7 +94,10 @@ export class ResearchOrchestrator {
     }
     const current = this.store.tasks(project);
     const completed = current.find(task => task.action === 'COMPLETE' && task.status === 'DONE');
-    if (completed) {
+    const activeReview = current.some(task => task.action === 'DELEGATE_NATIVE_REVIEW' && ['QUEUED', 'RUNNING'].includes(task.status));
+    if (completed && !activeReview) {
+      if (this.store.proposals(project).some(item => item.payload.action_type === 'DELEGATE_NATIVE_REVIEW'
+        && item.decision === 'NEEDS_HUMAN_APPROVAL')) return;
       if (run.plan.researchType !== 'causal-discovery') {
         const status = isTrialPreset(run.plan) ? resultOf<{ independentReproducibility: string }>(current, 'VALIDATE_PRESET_TRIAL')
           .independentReproducibility === 'PASS' ? 'SUCCESS' : 'FAILED' : 'INCONCLUSIVE';
@@ -109,7 +113,7 @@ export class ResearchOrchestrator {
       return;
     }
     if (!current.some(task => task.status === 'QUEUED' || task.status === 'RUNNING')) {
-      const failed = current.some(task => task.status === 'FAILED' && task.action !== 'REVIEW_STAGNATION'
+      const failed = current.some(task => task.status === 'FAILED' && !['REVIEW_STAGNATION', 'DELEGATE_NATIVE_REVIEW'].includes(task.action)
         && !current.some(next => next.action === task.action && next.status === 'DONE'));
       const canReview = run.plan.control === 'adaptive-v2' && run.plan.strategy !== 'deterministic'
         && !current.some(task => task.action === 'REVIEW_STAGNATION') && current.length < run.plan.maxTasks;
@@ -204,7 +208,9 @@ export class ResearchOrchestrator {
         const name = task.proposal.native_review;
         if (this.runtime.kind !== 'gjc' || !name || !run.plan.native?.includes(name) || !this.runtime.nativeReview
           || !this.runtime.nativeReviews?.includes(name)) throw new Error('An approved native reviewer is required');
-        const review = await this.runtime.nativeReview(name, run.objective, signal);
+        const selectedEvidence = new Set(task.proposal.dependencies);
+        const review = await this.runtime.nativeReview(name, run.objective, signal,
+          nativeReviewEvidence(name, history.filter(item => selectedEvidence.has(item.id))));
         return { result: { name, ...review, disposition: 'ADVISORY' } };
       }
       case 'RUN_PRESET_TRIAL': {
@@ -354,6 +360,8 @@ export class ResearchOrchestrator {
     const result = (action: Action) => completed.findLast(t => t.action === action)?.result ?? null;
     return {
       run, tasks, events, proposals: this.store.proposals(project), branch: this.store.branchContext(project) ?? null,
+      researchRelations: this.store.researchRelations(project), genomeLineage: this.store.genomeLineage(run.plan),
+      nativeReviewOptions: (run.plan.native ?? []).map(name => nativeReviewOption(name, tasks)),
       residents: this.store.residentView(project), messages: this.store.messages(project),
       researchLedger: { evidence: result('INVESTIGATE'), presetStudy: result('PLAN_PRESET_STUDY'), hypotheses: result('REFINE_HYPOTHESES') ?? result('GENERATE_HYPOTHESES'),
         arguments: result('REVIEW_ARGUMENTS'), argumentGraph: this.store.argumentGraph(project), plan: result('DESIGN_EXPERIMENT'),

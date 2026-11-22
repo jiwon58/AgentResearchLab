@@ -152,6 +152,14 @@ export class ResearchStore {
       independentPartition: Boolean(row.independent_partition) } : undefined;
   }
 
+  researchRelations(project: string) {
+    const parent = this.get<{ id: string; objective: string; status: RunStatus; independent_partition: number }>(
+      'SELECT r.id,r.objective,r.status,b.independent_partition FROM research_branches b JOIN research r ON r.id=b.parent_id WHERE b.research_id=?', project);
+    const children = this.all<NonNullable<typeof parent>>(
+      'SELECT r.id,r.objective,r.status,b.independent_partition FROM research_branches b JOIN research r ON r.id=b.research_id WHERE b.parent_id=? ORDER BY r.created_at,r.id', project);
+    return { parent: parent ?? null, children };
+  }
+
   run(id: string): Run {
     const row = this.get<RunRow>('SELECT id,objective,status,plan FROM research WHERE id=?', id);
     if (!row) throw new Error('Unknown research project');
@@ -233,6 +241,7 @@ export class ResearchStore {
       || p.evidence_refs.some(ref => !tasks.some(task => task.id === ref && task.status === 'DONE'))) {
       receipt = { decision: 'NEEDS_REVISION', reason: 'MISSING_PREREQUISITE_OR_EVIDENCE' };
     } else if (tasks.some(task => !['FAILED', 'CANCELLED'].includes(task.status) && task.action === p.action_type
+      && (p.action_type !== 'DELEGATE_NATIVE_REVIEW' || task.proposal.native_review === p.native_review)
       && hash([...new Set(task.proposal.dependencies)].sort()) === hash(dependencies.sort()))) {
       receipt = { decision: 'REJECTED', reason: 'DUPLICATE_WORK' };
     }
@@ -476,6 +485,18 @@ export class ResearchStore {
   revisionStatus(binding: string) {
     return { policy: this.activeRevision('policy', binding) ?? null, genome: this.activeRevision('genome', binding) ?? null,
       actions: this.all('SELECT kind,action,previous_id,next_id,created_at FROM revision_actions WHERE binding_id=? ORDER BY sequence DESC LIMIT 20', binding) };
+  }
+
+  genomeLineage(plan: Plan) {
+    if (!plan.genome || !plan.runtimeBinding) return [];
+    return this.all<{ id: string; parent_id: string | null; benchmark_id: string; created_at: number; code: number }>(
+      `WITH RECURSIVE lineage AS (
+        SELECT o.*, 0 AS distance FROM operational_revisions o WHERE id=? AND kind='genome' AND binding_id=?
+        UNION ALL
+        SELECT o.*, l.distance+1 FROM operational_revisions o JOIN lineage l ON l.parent_id=o.id
+           WHERE o.kind='genome' AND o.binding_id=l.binding_id
+      ) SELECT id,parent_id,benchmark_id,created_at,json_extract(configuration,'$.code') AS code
+        FROM lineage ORDER BY distance DESC`, plan.genome.id, plan.runtimeBinding);
   }
 
   registerDataset(input: unknown, sourceVersion: string) {
