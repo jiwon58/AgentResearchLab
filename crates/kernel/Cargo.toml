@@ -1,0 +1,8 @@
+[package]
+name = "gajae-research-kernel"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+gajae-logic-engine = { path = "../logic-engine" }

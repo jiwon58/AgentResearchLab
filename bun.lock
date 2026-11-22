@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": { "name": "gajae-autonomous-research-lab" },
+    "apps/lab": { "name": "@gajae-lab/app", "version": "0.1.0" },
+    "packages/research": { "name": "@gajae-lab/research", "version": "0.1.0" },
+    "packages/scientific-reasoning": { "name": "@gajae-lab/scientific-reasoning", "version": "0.1.0" }
+  },
+  "packages": {
+    "@gajae-lab/app": ["@gajae-lab/app@workspace:apps/lab"],
+    "@gajae-lab/research": ["@gajae-lab/research@workspace:packages/research"],
+    "@gajae-lab/scientific-reasoning": ["@gajae-lab/scientific-reasoning@workspace:packages/scientific-reasoning"]
+  }
+}

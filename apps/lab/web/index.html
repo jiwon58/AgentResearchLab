@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101c26">
+  <title>Gajae Research Lab</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script defer src="/dashboard.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">G</span><span>Gajae Research Lab</span></div>
+    <div class="header-controls"><span id="runtime" class="badge">연결 대기</span><button id="open-workspaces" type="button" class="header-button">작업 폴더 열기</button></div>
+  </header>
+  <div class="workspace-layout">
+    <aside class="sidebar" aria-label="작업 폴더와 연구 목록">
+      <section class="workspace-card">
+        <span class="caption">작업 폴더</span>
+        <strong id="workspace-name">연결된 폴더 없음</strong>
+        <span id="workspace-path" class="workspace-path"></span>
+        <button id="change-workspace" class="subtle" type="button">폴더 선택</button>
+      </section>
+      <div class="sidebar-heading"><h2>연구 실행</h2><button id="new-run" type="button" disabled>새 연구</button></div>
+      <div id="runs" class="run-list" aria-label="연구 실행 목록"></div>
+      <button id="comparisons" class="evolution-link" type="button" disabled><span aria-hidden="true">◫</span> 진화 및 비교 평가</button>
+    </aside>
+    <main class="workbench">
+      <p id="notice" role="status" aria-live="polite"></p>
+      <div id="content"></div>
+    </main>
+  </div>
+
+  <dialog id="workspace-dialog" aria-labelledby="workspace-dialog-title">
+    <div class="dialog-heading"><h2 id="workspace-dialog-title">작업 폴더 열기</h2><button type="button" data-close="workspace-dialog" class="close" aria-label="닫기">×</button></div>
+    <p>선택한 폴더에 연구 실행, 실험, 진화 기록이 저장됩니다.</p>
+    <button id="native-picker" type="button" class="primary">Windows에서 폴더 선택</button>
+    <form id="connect-form">
+      <label for="folder">폴더 경로</label>
+      <div class="path-entry"><input id="folder" name="folder" placeholder="C:\Research\ProcessQuality" required maxlength="2048"><button type="submit">연결</button></div>
+    </form>
+    <p id="folder-error" class="field-error" role="status"></p>
+    <section id="recent-section" hidden><h3>최근 폴더</h3><div id="recent-folders" class="recent-folders"></div></section>
+  </dialog>
+
+  <dialog id="research-dialog" aria-labelledby="research-dialog-title">
+    <div class="dialog-heading"><h2 id="research-dialog-title">새 연구</h2><button type="button" data-close="research-dialog" class="close" aria-label="닫기">×</button></div>
+    <p id="research-location"></p>
+    <form id="create-form">
+      <label for="objective">연구 목표</label>
+      <textarea id="objective" name="objective" rows="3" minlength="3" maxlength="2000" required placeholder="제조 공정 센서와 품질 불량률 사이의 관계를 검증합니다."></textarea>
+      <div class="form-grid">
+        <label>연구 유형<select name="researchType"><option value="causal-discovery">제조 공정 연관성</option><option value="ml-optimization">합성 분류 모델 비교</option><option value="algorithm-research">정렬 알고리즘 비교</option><option value="idea-discovery">아이디어 및 반증 설계</option><option value="custom-research">사용자 연구 설계</option></select></label>
+        <label>오케스트레이션<select name="strategy"><option value="hybrid-adaptive">적응형 Director</option><option value="deterministic">고정 정책</option><option value="cognitive-director">직렬 Director</option><option value="evolutionary-hybrid">진화형 정책</option></select></label>
+        <label>데이터<select name="dataset"><option value="">합성 제조 데이터</option></select></label>
+        <label>가설 Agent Genome<select name="evolution"><option value="static-baseline">기본 Seed</option><option value="quality-diversity">승인된 Genome 사용</option></select></label>
+        <label>메모리<select name="memory"><option value="both">개인 + 공유</option><option value="private">개인만</option><option value="shared">공유만</option><option value="none">사용 안 함</option></select></label>
+        <label>실험 시드<input name="seed" type="number" min="0" max="4294967295" step="1" required></label>
+        <label>최대 작업 수<input name="maxTasks" type="number" min="1" max="100" step="1" required></label>
+        <label>최대 병렬 작업<input name="maxParallel" type="number" min="1" max="8" step="1" required></label>
+        <label>작업 제한 시간 (초)<input name="timeout" type="number" min="0.1" max="60" step="0.001" required></label>
+      </div>
+      <p id="create-error" class="field-error" role="status"></p>
+      <div class="dialog-actions"><button type="button" data-close="research-dialog">취소</button><button type="submit" class="primary">연구 만들기</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

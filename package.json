@@ -1,0 +1,14 @@
+{
+  "name": "gajae-autonomous-research-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "start": "bun apps/lab/main.ts serve",
+    "demo": "bun apps/lab/main.ts demo",
+    "benchmark": "bun apps/lab/main.ts benchmark",
+    "test": "bun test tests",
+    "test:node": "node --test tests/*.test.ts scripts/*.test.mjs"
+  }
+}

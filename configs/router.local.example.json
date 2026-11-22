@@ -1,0 +1,12 @@
+{
+  "name": "Local Router",
+  "scheme": "http",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "openai_path": "/v1",
+  "anthropic_path": null,
+  "model": "replace-with-router-model-id",
+  "authentication": "none",
+  "enabled": true,
+  "allow_remote": false
+}

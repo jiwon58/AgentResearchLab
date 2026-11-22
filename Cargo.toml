@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/kernel", "crates/logic-engine"]
+resolver = "2"
